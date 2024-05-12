@@ -1,0 +1,5 @@
+This is a simple implementation for making a basic Virtual Network that deploys a Polari Node Frontend and Backend while
+auto-configuring them to be connected.
+
+To build this, navigate to the polari-node folder in the terminal, command line interface, and execute the command:
+docker-compose up --build

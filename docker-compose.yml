@@ -1,0 +1,37 @@
+version: '3.7'
+services:
+  frontend: 
+    build:
+      context: ./polari-platform-angular
+    env_file:
+      - .env
+    environment:
+      - BACKEND_URL=${BACKEND_URL}
+      - BACKEND_CONTAINER_PORT=${BACKEND_CONTAINER_PORT}
+    ports:
+      - "${FRONTEND_LOCALHOST_PORT}:${FRONTEND_CONTAINER_PORT}"
+      - "4200:4200"
+    networks:
+      - polari-node-network
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./polari-framework
+    env_file:
+      - .env
+    environment:
+      - FRONTEND_URL=${FRONTEND_URL}
+      - BACKEND_APP_PORT=${BACKEND_LOCALHOST_PORT}
+      - FRONTEND_APP_PORT=${FRONTEND_LOCALHOST_PORT}
+      - FRONTEND_CONTAINER_PORT=${FRONTEND_CONTAINER_PORT}
+    networks:
+      - polari-node-network
+    ports:
+      - "${BACKEND_LOCALHOST_PORT}:${BACKEND_CONTAINER_PORT}"
+      - "3000:3000"
+
+networks:
+  polari-node-network:
+    driver: bridge
