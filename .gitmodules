@@ -1,6 +1,6 @@
 [submodule "polari-platform-angular"]
-	path = polari-platform-angular
+	path = frontend
 	url = https://github.com/dausume/polari-platform-angular.git
 [submodule "Polari-Framework"]
-	path = Polari-Framework
-	url = https://github.com/dausume/Polari-Framework.git
+	path = backend
+	url = https://github.com/dausume/Polari-Framework
