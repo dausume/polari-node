@@ -3,3 +3,142 @@ auto-configuring them to be connected.
 
 To build this, navigate to the polari-node folder in the terminal, command line interface, and execute the command:
 docker-compose up --build
+
+### Installing Docker & Docker Compose with Docker Desktop (Recommended for people new to Docker but not required Step - Gives a UI for seeing Containers)
+
+For people not already very familiar with using Docker & Docker Compose through the CLI, I would strongly
+recommend using Docker Desktop or an equivalent application.  The reason for this is, Docker Desktop
+
+Installing Docker Desktop will be different depending on whether you are on Windows, a Linux System, or another system.  So, I have given a list of resources that take you to source documentation and/or tutorial videos for the ones that I could find.
+
+## Installing Docker Desktop per OS
+
+# Windows
+Documentation for Installing on Windows
+https://docs.docker.com/desktop/install/windows-install/
+
+Tutorial Video for installation from Raid Owl
+https://youtu.be/cMyoSkQZ41E?si=SeMRtRxYSPJwGLzr
+
+# Mac
+Documentation for Intalling Docker Desktop
+IMPORTANT! Also need to ensure permissions are set up properly for Docker Desktop to work
+https://docs.docker.com/desktop/install/mac-install/
+
+# Linux
+Documentation for Installing Docker Desktop on Linux
+https://docs.docker.com/desktop/install/linux-install/
+
+# Ubuntu
+https://docs.docker.com/desktop/install/ubuntu/
+
+# Debian
+https://docs.docker.com/desktop/install/debian/
+
+# Fedora
+https://docs.docker.com/desktop/install/fedora/
+
+# Arch-linux
+https://docs.docker.com/desktop/install/archlinux/
+
+### Install Docker & Docker Compose for CLI
+
+## Docker (Docker Engine)
+Documentation for original Docker Engine install, operated through CLI interface.
+https://docs.docker.com/engine/install/
+
+## Docker Compose
+
+# Linux (as a plugin)
+https://docs.docker.com/compose/install/linux/
+
+# Linux (as standalone)
+https://docs.docker.com/compose/install/standalone/
+
+### Installing Polari-Node
+
+## For Developers
+It may help to create a GitHub account and download GitHub Desktop if you do not already have it.
+
+How to install Docker Desktop as of 6/17/2024
+https://docs.github.com/en/desktop/installing-and-authenticating-to-github-desktop/installing-github-desktop
+
+Go to the Polari-Node project GitHub : https://github.com/dausume/polari-node
+
+There will be multiple ways to go about cloning this but I will go through the easiest two, since people who need the more advanced methods should hopefully be able to figure them out.
+
+On the main project page, you will see in the mid-upper-right segment of the screen that there is a green button that looks like a dropdown with the text "<> Code".  Click on that, and a dropdown interface will appear.
+
+# Install Polari-Node Project via GitHub Desktop
+First, make certain that you have the GitHub Desktop Application open on your computer.
+
+Log in to your GitHub account on GitHub Desktop.
+
+Going back to the Polari-Node Project Page on GitHub, click on the code dropdown again, and choose "Open with GitHub Desktop".
+
+Follow directions according to prompts, and choose the location for the Polari-Node Directory to be installed.
+
+GO TO THE 'LAUNCH POLARI-NODE' SECTION.
+
+# Install Polari-Node Project via https
+Going back to the Polari-Node Project Page on GitHub, click on the code dropdown again, and choose "Local"->"HTTPS tab"->and copy "https://github.com/dausume/polari-node.git"... or just use the link I pasted there just now actually, that would work to so long as the project has not migrated somewhere new by the time you are reading this.
+
+To clone the project using https, open your terminal of choice and go to the file/directory path location where you want the project to be.  Then you can just copy and paste this command : "git clone https://github.com/dausume/polari-node.git" and just remove the quotes then hit enter.
+
+The project will download and you should have the polari-node directory, together with the two sub-projects (polari-platform-angular, and polari-framework) and everything in it when it is done.
+
+GO TO THE 'LAUNCH POLARI-NODE' SECTION.
+
+
+## Dev: Launch Polari-Node
+
+Make sure you track where you put that directory, because now in your terminal of choice you will need to go into that directory.  It should look like 'C:\Users\Someone\Desktop\polari-node' or something similar if you chose to put it on your Desktop.
+
+In a terminal of your choice (Opening the terminal in VS Code something similar works as well), navigate to that directory.
+
+ -- Quick tutorial on simple terminal path navigation --
+
+To navigate a Directory, use cd.. to go down one directory, for example to navigate from the terminal path 'C:\Users\Someone\Desktop\polari-node', enter the command 'cd ..' into the terminal interface and press enter to execute the command.  After doing so you should see the path change to 'C:\Users\Someone\Desktop\polari-node', going down one level.
+
+Then to go up levels in a directory path, you need to know what paths you can choose from.
+
+Using the command 'ls' in the terminal will show you all files and directories in the current path you are on, using that list you can see where you can go to next.  For example after doing the 'cd..' command and dropping down to Desktop directory, if I use 'ls' then one of the Names under the Name column should be 'polari-node'.
+
+After confirming polari-node is something in my current directory, I can move back up to that level using the command 'cd ./polari-node'.  Now I should be back where I started.
+-------------------------------------------------------------
+# Launching Polari-Node
+
+Now that you are in a terminal, in the directory, you should only need to run two more commands to get it running.
+
+Enter "docker compose build"
+This will locally build the images, volumes, and overall template of how to make the servers and virtual network locally.
+Wait and confirm that this completes.
+
+Now, enter "docker compose up", in order to run the application.
+
+Docker compose up will initialize server startup, this may be almost instantaneous or take a few minutes depending on
+the device you are using.  Using simply 'docker compose up' is good if you want to see the terminal logging stuff it
+is doing while the servers start up, or if you want to feel cool showing it off to someone who does not know how to code.
+
+Once it is finished, you will be able to access the angular frontend (polari-node website) at 
+http://localhost:4200
+if the backend successfully booted up before you launched the app, it should automatically connect to the backend
+and you should see that the object-pages load in the navigation menu in addition to the 5 or so default pages.
+
+If it does not automatically connect, you may want to try going to the polari-config page.  Confirm the url and port
+match 'localhost' and '3000' (that is the backend location by default currently).  And hit the Connect button if you want
+to try connecting again after waiting a bit for the backend to finish booting up.
+
+If this is not working at all, a next step may be to try and hit the backend directly to see if it is sending the raw json at all.  For this you can either ping http://localhost:3000 directly in your browser or wherever, or try something 
+like postman https://www.postman.com/ for testing the backend apis (warning, postman has become more restrictive and seem to send your data to a cloud without clear warning if you are logged in with an account as of 6/22/2024, so use with caution in offline/logged off mode if using any secure systems).
+
+
+## For Users/Researchers
+(Under Construction - TODO)
+(1) Download a file which generates a temporary app for an install wizard per-OS.
+(2) Detect if Docker and Docker Compose are Installed, advise to install if it is not detected, but give the option
+to skip install for the case where maybe it is installed and just is not being detected.
+(3) Conditionally perform the download for Docker, and confirm a successful install.
+(4) Ask user to confirm Docker and Docker Compose were installed, and attempt a test via terminal with the app, then ask if they want Polari-Node installed.
+(5) Install and launch Polari-Node in local network mode so that the user can begin configuring the app.
+(6) After accessing the Polari-Node page, the user can configure the app as needed and follow instructions to then securely expose their application.
