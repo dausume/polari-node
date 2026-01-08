@@ -1,7 +1,10 @@
 services:
-  frontend: 
+  frontend:
     build:
       context: ./polari-platform-angular
+      # Enable BuildKit for cache mounts and faster builds
+      cache_from:
+        - polari-platform-angular:latest
     env_file:
       - .env
     environment:
@@ -14,10 +17,18 @@ services:
       - polari-node-network
     depends_on:
       - backend
+    volumes:
+      # Persist built Angular app across rebuilds
+      - frontend-dist:/project/dist
+      # Optional: Persist .angular cache for faster rebuilds
+      - frontend-angular-cache:/project/.angular
 
   backend:
     build:
       context: ./polari-framework
+      # Enable BuildKit for cache mounts and faster builds
+      cache_from:
+        - polari-framework:latest
     env_file:
       - .env
     environment:
@@ -30,6 +41,28 @@ services:
     ports:
       - "${BACKEND_LOCALHOST_PORT}:${BACKEND_CONTAINER_PORT}"
       - "3000:3000"
+    volumes:
+      # Persist SQLite database across container recreations
+      # Adjust path if your database is stored elsewhere
+      - backend-data:/app/data
+      # Optional: Persist Python cache for faster imports
+      - backend-pycache:/app/__pycache__
+
+# Named volumes for persistence and caching
+# These volumes are managed by Docker and don't interfere with local development
+# Data persists across container recreations but can be removed with: docker volume rm <volume-name>
+volumes:
+  # Frontend volumes
+  frontend-dist:
+    driver: local
+  frontend-angular-cache:
+    driver: local
+
+  # Backend volumes
+  backend-data:
+    driver: local
+  backend-pycache:
+    driver: local
 
 networks:
   polari-node-network:

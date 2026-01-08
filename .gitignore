@@ -1,0 +1,55 @@
+# Docker volumes and data (if bind-mounted locally)
+# Note: Named volumes in docker-compose.yml don't create local directories
+# but this protects against future bind mounts
+/docker-volumes/
+/backend-data/
+/frontend-dist/
+
+# Environment files (contain sensitive data)
+.env
+.env.local
+.env.*.local
+
+# Docker build artifacts
+docker-compose.override.yml
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Local development
+.cache/
+.tmp/
+temp/
+
+# Python local development (should use venv, not system packages)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+
+# Node local development (npm dependencies)
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.egg-info/
