@@ -1,0 +1,78 @@
+# Docker Compose file for full-stack testing
+# Orchestrates both frontend and backend tests together
+# This allows frontend tests to make real API calls to the backend
+
+services:
+  # Backend framework tests
+  polari-framework-tests:
+    build:
+      context: ./polari-framework
+      dockerfile: Dockerfile.test
+    container_name: polari-framework-tests
+    networks:
+      - polari-fullstack-test-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Run backend tests first
+    restart: "no"
+
+  # Backend API server for frontend integration testing
+  polari-framework-server:
+    build:
+      context: ./polari-framework
+      dockerfile: Dockerfile
+    container_name: polari-framework-server
+    environment:
+      - DEPLOY_ENV=test
+      - BACKEND_APP_PORT=8000
+      - IN_DOCKER_CONTAINER=true
+    networks:
+      - polari-fullstack-test-network
+    ports:
+      - "8000:8000"
+    healthcheck:
+      # Use Python to check if server is responding (no curl needed)
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # Keep server running for frontend tests
+    restart: "no"
+    depends_on:
+      polari-framework-tests:
+        condition: service_completed_successfully
+
+  # Frontend tests (runs after backend is ready)
+  polari-frontend-tests:
+    build:
+      context: ./polari-platform-angular
+      dockerfile: Dockerfile.test
+    container_name: polari-frontend-tests
+    environment:
+      # Enable fullstack mode for frontend tests
+      - TEST_MODE=fullstack
+      - BACKEND_URL=http://polari-framework-server:8000
+    networks:
+      - polari-fullstack-test-network
+    volumes:
+      # Mount source code for development
+      - ./polari-platform-angular/src:/app/src:ro
+      - ./polari-platform-angular/karma.conf.js:/app/karma.conf.js:ro
+      - ./polari-platform-angular/angular.json:/app/angular.json:ro
+      - ./polari-platform-angular/tsconfig.json:/app/tsconfig.json:ro
+      - ./polari-platform-angular/tsconfig.spec.json:/app/tsconfig.spec.json:ro
+      # Mount coverage output directory
+      - ./polari-platform-angular/coverage:/app/coverage
+    restart: "no"
+    depends_on:
+      polari-framework-server:
+        condition: service_healthy
+
+networks:
+  polari-fullstack-test-network:
+    driver: bridge
+    name: polari-fullstack-test-network
