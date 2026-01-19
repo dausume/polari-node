@@ -1,18 +1,74 @@
+# ==============================================================================
+# POLARI RESEARCH FRAMEWORK - STANDALONE DOCKER COMPOSE
+# ==============================================================================
+#
+# IMPORTANT: Choose ONE mode to run - do NOT mix:
+#   - STANDALONE MODE: Run from polari-rf-node/ using THIS file
+#   - SUITE MODE: Run from polari-suite/ using the parent docker-compose.yml
+#
+# Running both will cause container name conflicts!
+#
+# This file runs PRF independently without a proxy layer.
+# For running PRF alongside PSC, use the suite-level docker-compose instead.
+#
+# ==============================================================================
+# PORTS (No conflict with PSC when run standalone)
+# ==============================================================================
+#   - Frontend HTTP:  localhost:4201
+#   - Frontend HTTPS: localhost:2087 (Cloudflare-compatible)
+#   - Backend HTTP:   localhost:3000
+#   - Backend HTTPS:  localhost:2096 (Cloudflare-compatible)
+#
+# ==============================================================================
+# TIERED CONFIGURATION SYSTEM
+# ==============================================================================
+# TIER 1 (Build-time):   Values baked into images via Dockerfile
+# TIER 2 (Startup-time): Environment variables below - override at 'docker-compose up'
+# TIER 3 (Runtime):      Changed via UI/API while containers are running
+#
+# To override Tier 2 values, either:
+#   1. Edit the .env file
+#   2. Pass environment variables: BACKEND_URL=example.com docker-compose up
+#   3. Use docker-compose.override.yml
+# ==============================================================================
+
 services:
+  # ===========================================================================
+  # FRONTEND - Angular Application
+  # ===========================================================================
   frontend:
     build:
       context: ./polari-platform-angular
-      # Enable BuildKit for cache mounts and faster builds
       cache_from:
         - polari-platform-angular:latest
+    # Load defaults first, then .env overrides
     env_file:
+      - .env.defaults
       - .env
     environment:
-      - BACKEND_URL=${BACKEND_URL}
-      - BACKEND_CONTAINER_PORT=${BACKEND_CONTAINER_PORT}
+      # TIER 2: Startup-time overrides (can be changed without rebuild)
+      # Backend connection settings
+      - BACKEND_URL=${BACKEND_URL:-localhost}
+      - BACKEND_HTTP_PORT=${BACKEND_HTTP_PORT:-3000}
+      - BACKEND_HTTPS_PORT=${BACKEND_HTTPS_PORT:-2096}
+      - BACKEND_PREFER_HTTPS=${BACKEND_PREFER_HTTPS:-false}
+      # Frontend settings
+      - FRONTEND_URL=${FRONTEND_URL:-localhost}
+      - FRONTEND_HTTP_PORT=${FRONTEND_HTTP_PORT:-4200}
+      - FRONTEND_HTTPS_PORT=${FRONTEND_HTTPS_PORT:-2087}
+      # SSL settings
+      - SSL_ENABLED=${SSL_ENABLED:-true}
+      - SSL_CERT_PATH=/app/certs/prf-proxy.crt
+      - SSL_KEY_PATH=/app/certs/prf-proxy.key
+      # Connection settings (TIER 3 capable - can also change at runtime)
+      - CONNECTION_RETRY_INTERVAL=${CONNECTION_RETRY_INTERVAL:-3000}
+      - CONNECTION_MAX_RETRY_TIME=${CONNECTION_MAX_RETRY_TIME:-60000}
+      - CONNECTION_TIMEOUT=${CONNECTION_TIMEOUT:-30000}
     ports:
-      - "${FRONTEND_LOCALHOST_PORT}:${FRONTEND_CONTAINER_PORT}"
-      - "4200:4200"
+      # HTTP port (4201 to avoid conflict with PSC on 4200)
+      - "${FRONTEND_HTTP_PORT:-4201}:4200"
+      # HTTPS port (Cloudflare-compatible)
+      - "${FRONTEND_HTTPS_PORT:-2087}:2087"
     networks:
       - polari-node-network
     depends_on:
@@ -20,33 +76,60 @@ services:
     volumes:
       # Persist built Angular app across rebuilds
       - frontend-dist:/project/dist
-      # Optional: Persist .angular cache for faster rebuilds
+      # Persist .angular cache for faster rebuilds
       - frontend-angular-cache:/project/.angular
+      # Mount SSL certificates (read-only)
+      - ./prf-proxy/certs:/app/certs:ro
+      # Mount runtime config for Tier 2 startup overrides
+      - ./polari-platform-angular/src/assets/runtime-config.json:/project/src/assets/runtime-config.json:ro
 
+  # ===========================================================================
+  # BACKEND - Python/Falcon API Server
+  # ===========================================================================
   backend:
     build:
       context: ./polari-framework
-      # Enable BuildKit for cache mounts and faster builds
       cache_from:
         - polari-framework:latest
+    # Load defaults first, then .env overrides
     env_file:
+      - .env.defaults
       - .env
     environment:
-      - FRONTEND_URL=${FRONTEND_URL}
-      - BACKEND_APP_PORT=${BACKEND_LOCALHOST_PORT}
-      - FRONTEND_APP_PORT=${FRONTEND_LOCALHOST_PORT}
-      - FRONTEND_CONTAINER_PORT=${FRONTEND_CONTAINER_PORT}
+      # TIER 2: Startup-time overrides (can be changed without rebuild)
+      # Backend server settings
+      - BACKEND_URL=${BACKEND_URL:-localhost}
+      - BACKEND_HTTP_PORT=${BACKEND_HTTP_PORT:-3000}
+      - BACKEND_HTTPS_PORT=${BACKEND_HTTPS_PORT:-2096}
+      - BACKEND_APP_PORT=${BACKEND_HTTP_PORT:-3000}
+      # Frontend reference
+      - FRONTEND_URL=${FRONTEND_URL:-localhost}
+      - FRONTEND_HTTP_PORT=${FRONTEND_HTTP_PORT:-4200}
+      # SSL settings
+      - SSL_ENABLED=${SSL_ENABLED:-true}
+      - SSL_CERT_PATH=/app/certs/prf-proxy.crt
+      - SSL_KEY_PATH=/app/certs/prf-proxy.key
+      # Deployment environment
+      - DEPLOY_ENV=${DEPLOY_ENV:-development}
+      - IN_DOCKER_CONTAINER=true
+      # Logging (TIER 3 capable)
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # CORS settings
+      - CORS_ENABLED=${CORS_ENABLED:-true}
     networks:
       - polari-node-network
     ports:
-      - "${BACKEND_LOCALHOST_PORT}:${BACKEND_CONTAINER_PORT}"
-      - "3000:3000"
+      # HTTP port
+      - "${BACKEND_HTTP_PORT:-3000}:3000"
+      # HTTPS port (Cloudflare-compatible)
+      - "${BACKEND_HTTPS_PORT:-2096}:2096"
     volumes:
       # Persist SQLite database across container recreations
-      # Adjust path if your database is stored elsewhere
       - backend-data:/app/data
-      # Optional: Persist Python cache for faster imports
+      # Persist Python cache for faster imports
       - backend-pycache:/app/__pycache__
+      # Mount SSL certificates (read-only)
+      - ./prf-proxy/certs:/app/certs:ro
 
 # Named volumes for persistence and caching
 # These volumes are managed by Docker and don't interfere with local development

@@ -1,3 +1,22 @@
+# ==============================================================================
+# SSL/TLS CERTIFICATES AND KEYS
+# ==============================================================================
+# SECURITY: Never commit certificates or private keys to version control
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+*.cer
+*.der
+# Certificate directories
+**/certs/
+**/ssl/
+**/certificates/
+
+# ==============================================================================
+# DOCKER VOLUMES AND DATA
+# ==============================================================================
 # Docker volumes and data (if bind-mounted locally)
 # Note: Named volumes in docker-compose.yml don't create local directories
 # but this protects against future bind mounts
