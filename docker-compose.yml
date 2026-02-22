@@ -116,6 +116,11 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # CORS settings
       - CORS_ENABLED=${CORS_ENABLED:-true}
+      # Object Storage (MinIO) — disabled in standalone mode
+      - OBJECT_STORAGE_ENABLED=${OBJECT_STORAGE_ENABLED:-false}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-pol-file-store:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-}
     networks:
       - polari-node-network
     ports:
