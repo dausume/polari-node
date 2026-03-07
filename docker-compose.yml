@@ -64,6 +64,9 @@ services:
       - CONNECTION_RETRY_INTERVAL=${CONNECTION_RETRY_INTERVAL:-3000}
       - CONNECTION_MAX_RETRY_TIME=${CONNECTION_MAX_RETRY_TIME:-60000}
       - CONNECTION_TIMEOUT=${CONNECTION_TIMEOUT:-30000}
+      # WebSocket settings
+      - WEBSOCKET_URL=${BACKEND_URL:-localhost}
+      - WEBSOCKET_PORT=${WEBSOCKET_PORT:-3001}
     ports:
       # HTTP port (4201 to avoid conflict with PSC on 4200)
       - "${FRONTEND_HTTP_PORT:-4201}:4200"
@@ -116,6 +119,9 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # CORS settings
       - CORS_ENABLED=${CORS_ENABLED:-true}
+      # WebSocket (STOMP) settings
+      - WEBSOCKET_ENABLED=${WEBSOCKET_ENABLED:-true}
+      - WEBSOCKET_PORT=${WEBSOCKET_PORT:-3001}
       # Object Storage (MinIO) — disabled in standalone mode
       - OBJECT_STORAGE_ENABLED=${OBJECT_STORAGE_ENABLED:-false}
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-pol-file-store:9000}
@@ -128,6 +134,8 @@ services:
       - "${BACKEND_HTTP_PORT:-3000}:3000"
       # HTTPS port (Cloudflare-compatible)
       - "${BACKEND_HTTPS_PORT:-2096}:2096"
+      # STOMP WebSocket
+      - "${WEBSOCKET_PORT:-3001}:3001"
     volumes:
       # Persist SQLite database across container recreations
       - backend-data:/app/data
