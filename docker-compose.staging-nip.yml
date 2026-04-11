@@ -1,0 +1,201 @@
+# ==============================================================================
+# POLARI RESEARCH FRAMEWORK - STAGING (nip.io subdomain routing)
+# ==============================================================================
+#
+# Purpose: Test production builds locally with subdomain routing via prf-proxy,
+# resource limits, and healthchecks. Mirrors suite-level staging pattern.
+#
+# SETUP (run once, or when IP changes):
+#   ./staging-setup.sh   # Generates .generated/ configs
+#
+# USAGE:
+#   docker compose -f docker-compose.staging-nip.yml up -d --build
+#
+# ACCESS (using your local IP, e.g., 10.0.0.101):
+#   - PRF Frontend:   https://prf.10.0.0.101.nip.io
+#   - PRF API:        https://api.prf.10.0.0.101.nip.io
+#   - MinIO Console:  https://files.prf.10.0.0.101.nip.io
+#   - MinIO S3 API:   https://s3.prf.10.0.0.101.nip.io
+#
+# ==============================================================================
+# PORTS (external — via prf-proxy only)
+# ==============================================================================
+#   - HTTP:   80   (redirects to HTTPS)
+#   - HTTPS:  443  (subdomain routing to all services)
+#
+# ==============================================================================
+# MEMORY BUDGET (~1.2GB total for standalone PRF)
+# ==============================================================================
+#   - prf-backend:     384MB (Python)
+#   - prf-file-store:  256MB (MinIO S3 storage)
+#   - prf-frontend:     64MB (nginx static)
+#   - prf-proxy:        64MB (nginx proxy)
+#   - Buffer:          ~430MB
+# ==============================================================================
+
+services:
+  # ===========================================================================
+  # PROXY - nginx subdomain routing (TLS termination)
+  # ===========================================================================
+  prf-proxy:
+    build:
+      context: ./prf-proxy
+      dockerfile: Dockerfile
+      args:
+        NGINX_CONF: nginx.dev.conf
+    container_name: prf-proxy
+    image: prf-proxy:staging
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - polari-node-network
+    volumes:
+      # Mount generated nginx config (from staging-setup.sh)
+      - ./.generated/nginx.staging.conf:/etc/nginx/nginx.conf:ro
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.2'
+        reservations:
+          memory: 32M
+          cpus: '0.05'
+    depends_on:
+      prf-file-store:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_healthy
+
+  # ===========================================================================
+  # OBJECT STORAGE - MinIO S3-Compatible File Store
+  # ===========================================================================
+  prf-file-store:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM minio/minio:latest
+        VOLUME /data
+        EXPOSE 9000 9001
+        CMD ["server", "/data", "--console-address", ":9001"]
+    container_name: prf-file-store
+    image: prf-file-store:staging
+    restart: always
+    networks:
+      - polari-node-network
+    env_file:
+      - ./.generated/.env.staging
+    environment:
+      - MINIO_ROOT_USER=polari-admin
+      - MINIO_ROOT_PASSWORD=polari-file-store-password
+      # MINIO_SERVER_URL and MINIO_BROWSER_REDIRECT_URL come from env_file
+      # (pre-computed with LOCAL_IP by staging-setup.sh)
+    volumes:
+      - file-store-data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.3'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+
+  # ===========================================================================
+  # FRONTEND - Angular Application (Production Build)
+  # ===========================================================================
+  frontend:
+    build:
+      context: ./polari-platform-angular
+      dockerfile: Dockerfile.prod
+    container_name: prf-frontend
+    image: prf-frontend:staging
+    restart: always
+    networks:
+      - polari-node-network
+    volumes:
+      # Mount generated runtime config for nip.io URLs
+      - ./.generated/prf-runtime-config.json:/usr/share/nginx/html/assets/runtime-config.json:ro
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.2'
+        reservations:
+          memory: 32M
+          cpus: '0.05'
+    depends_on:
+      - backend
+
+  # ===========================================================================
+  # BACKEND - Python/Falcon API Server
+  # ===========================================================================
+  backend:
+    build:
+      context: ./polari-framework
+    container_name: prf-backend
+    image: prf-backend:staging
+    restart: always
+    networks:
+      - polari-node-network
+    env_file:
+      - ./.generated/.env.staging
+    environment:
+      - DEPLOY_ENV=staging
+      - IN_DOCKER_CONTAINER=true
+      # API profiler self-call rewriting (avoids hairpin NAT)
+      - INTERNAL_API_URL=http://localhost:3000
+      # Database — SQLite enabled
+      - DATABASE_TYPE=sqlite
+      - DATABASE_PATH=./data/polari.db
+      # Object Storage — MinIO enabled
+      - OBJECT_STORAGE_ENABLED=true
+      - MINIO_ENDPOINT=prf-file-store:9000
+      - MINIO_ACCESS_KEY=polari-admin
+      - MINIO_SECRET_KEY=polari-file-store-password
+      # WebSocket (STOMP) notifications
+      - WEBSOCKET_ENABLED=true
+      - WEBSOCKET_PORT=3001
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      start_period: 45s
+      retries: 5
+    volumes:
+      - backend-data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: '0.4'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    depends_on:
+      prf-file-store:
+        condition: service_healthy
+
+# ==============================================================================
+# VOLUMES
+# ==============================================================================
+volumes:
+  file-store-data:
+  backend-data:
+
+# ==============================================================================
+# NETWORKS
+# ==============================================================================
+networks:
+  polari-node-network:
+    driver: bridge

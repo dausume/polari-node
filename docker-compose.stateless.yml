@@ -1,79 +1,29 @@
 # ==============================================================================
-# POLARI RESEARCH FRAMEWORK - STANDALONE DEVELOPMENT
+# POLARI RESEARCH FRAMEWORK - STATELESS (No Persistence)
 # ==============================================================================
 #
-# Minimalist fullstack configuration with local MinIO object storage + SQLite.
-# Runs PRF independently without the full Polari Suite.
+# Ephemeral configuration with NO database and NO object storage.
+# All data lives only in the in-memory tree — nothing persists between restarts.
 #
-# IMPORTANT: Choose ONE mode to run - do NOT mix:
-#   - STANDALONE MODE: Run from polari-rf-node/ using THIS file
-#   - SUITE MODE: Run from polari-suite/ using the parent docker-compose.yml
-#
-# Running both will cause container name conflicts!
+# USE CASE: Scalable parallel processing containers where remembering state
+# does not matter. Each container processes independently and discards results.
 #
 # USAGE:
-#   docker compose up -d --build
-#   docker compose up -d --build backend     # Rebuild single service
-#   docker compose down                      # Stop all
-#
-# OTHER ENVIRONMENTS:
-#   Stateless (no DB, no MinIO - for parallel processing):
-#       docker compose -f docker-compose.stateless.yml up -d --build
-#   Staging (nip.io subdomains - closest to prod):
-#       docker compose -f docker-compose.staging-nip.yml up -d --build
-#   Production:
-#       docker compose -f docker-compose.prod.yml up -d --build
+#   docker compose -f docker-compose.stateless.yml up -d --build
+#   docker compose -f docker-compose.stateless.yml down
 #
 # ==============================================================================
 # PORTS
 # ==============================================================================
-#   - Frontend HTTP:   http://localhost:4201
-#   - Frontend HTTPS:  http://localhost:2087 (Cloudflare-compatible)
-#   - Backend HTTP:    http://localhost:3000
-#   - Backend HTTPS:   http://localhost:2096 (Cloudflare-compatible)
-#   - WebSocket STOMP: http://localhost:3001
-#   - MinIO S3 API:    http://localhost:9000
-#   - MinIO Console:   http://localhost:9001
+#   - Frontend HTTP:   localhost:4201
+#   - Frontend HTTPS:  localhost:2087 (Cloudflare-compatible)
+#   - Backend HTTP:    localhost:3000
+#   - Backend HTTPS:   localhost:2096 (Cloudflare-compatible)
+#   - WebSocket STOMP: localhost:3001
 #
-# ==============================================================================
-# TIERED CONFIGURATION SYSTEM
-# ==============================================================================
-# TIER 1 (Build-time):   Values baked into images via Dockerfile
-# TIER 2 (Startup-time): Environment variables below - override at 'docker-compose up'
-# TIER 3 (Runtime):      Changed via UI/API while containers are running
-#
-# To override Tier 2 values, either:
-#   1. Edit the .env file
-#   2. Pass environment variables: BACKEND_URL=example.com docker-compose up
-#   3. Use docker-compose.override.yml
 # ==============================================================================
 
 services:
-  # ===========================================================================
-  # OBJECT STORAGE - MinIO S3-Compatible File Store
-  # ===========================================================================
-  prf-file-store:
-    image: minio/minio:latest
-    container_name: prf-file-store
-    restart: always
-    ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # MinIO Console
-    networks:
-      - polari-node-network
-    environment:
-      - MINIO_ROOT_USER=polari-admin
-      - MINIO_ROOT_PASSWORD=polari-file-store-password
-    volumes:
-      - file-store-data:/data
-    command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      start_period: 10s
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
   # ===========================================================================
   # FRONTEND - Angular Application
   # ===========================================================================
@@ -83,12 +33,10 @@ services:
       cache_from:
         - polari-platform-angular:latest
     container_name: prf-frontend
-    # Load defaults first, then .env overrides
     env_file:
       - .env.defaults
       - .env
     environment:
-      # TIER 2: Startup-time overrides (can be changed without rebuild)
       # Backend connection settings
       - BACKEND_URL=${BACKEND_URL:-localhost}
       - BACKEND_HTTP_PORT=${BACKEND_HTTP_PORT:-3000}
@@ -102,7 +50,7 @@ services:
       - SSL_ENABLED=${SSL_ENABLED:-true}
       - SSL_CERT_PATH=/app/certs/prf-proxy.crt
       - SSL_KEY_PATH=/app/certs/prf-proxy.key
-      # Connection settings (TIER 3 capable - can also change at runtime)
+      # Connection settings
       - CONNECTION_RETRY_INTERVAL=${CONNECTION_RETRY_INTERVAL:-3000}
       - CONNECTION_MAX_RETRY_TIME=${CONNECTION_MAX_RETRY_TIME:-60000}
       - CONNECTION_TIMEOUT=${CONNECTION_TIMEOUT:-30000}
@@ -110,26 +58,23 @@ services:
       - WEBSOCKET_URL=${BACKEND_URL:-localhost}
       - WEBSOCKET_PORT=${WEBSOCKET_PORT:-3001}
     ports:
-      # HTTP port (4201 to avoid conflict with PSC on 4200)
       - "${FRONTEND_HTTP_PORT:-4201}:4200"
-      # HTTPS port (Cloudflare-compatible)
       - "${FRONTEND_HTTPS_PORT:-2087}:2087"
     networks:
       - polari-node-network
     depends_on:
       - backend
     volumes:
-      # Persist built Angular app across rebuilds
+      # Persist build cache only (not data)
       - frontend-dist:/project/dist
-      # Persist .angular cache for faster rebuilds
       - frontend-angular-cache:/project/.angular
       # Mount SSL certificates (read-only)
       - ./prf-proxy/certs:/app/certs:ro
-      # Mount runtime config for Tier 2 startup overrides
+      # Mount runtime config
       - ./polari-platform-angular/src/assets/runtime-config.json:/project/src/assets/runtime-config.json:ro
 
   # ===========================================================================
-  # BACKEND - Python/Falcon API Server
+  # BACKEND - Python/Falcon API Server (Stateless)
   # ===========================================================================
   backend:
     build:
@@ -137,12 +82,10 @@ services:
       cache_from:
         - polari-framework:latest
     container_name: prf-backend
-    # Load defaults first, then .env overrides
     env_file:
       - .env.defaults
       - .env
     environment:
-      # TIER 2: Startup-time overrides (can be changed without rebuild)
       # Backend server settings
       - BACKEND_URL=${BACKEND_URL:-localhost}
       - BACKEND_HTTP_PORT=${BACKEND_HTTP_PORT:-3000}
@@ -158,57 +101,34 @@ services:
       # Deployment environment
       - DEPLOY_ENV=${DEPLOY_ENV:-development}
       - IN_DOCKER_CONTAINER=true
-      # Logging (TIER 3 capable)
+      # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # CORS settings
       - CORS_ENABLED=${CORS_ENABLED:-true}
       # WebSocket (STOMP) settings
       - WEBSOCKET_ENABLED=${WEBSOCKET_ENABLED:-true}
       - WEBSOCKET_PORT=${WEBSOCKET_PORT:-3001}
-      # Database — SQLite enabled
-      - DATABASE_TYPE=sqlite
-      - DATABASE_PATH=./data/polari.db
-      # Object Storage — MinIO enabled (local standalone instance)
-      - OBJECT_STORAGE_ENABLED=true
-      - MINIO_ENDPOINT=prf-file-store:9000
-      - MINIO_ACCESS_KEY=polari-admin
-      - MINIO_SECRET_KEY=polari-file-store-password
+      # Database — DISABLED (tree-only storage)
+      - DATABASE_TYPE=none
+      - OBJECT_STORAGE_ENABLED=false
     networks:
       - polari-node-network
     ports:
-      # HTTP port
       - "${BACKEND_HTTP_PORT:-3000}:3000"
-      # HTTPS port (Cloudflare-compatible)
       - "${BACKEND_HTTPS_PORT:-2096}:2096"
-      # STOMP WebSocket
       - "${WEBSOCKET_PORT:-3001}:3001"
     volumes:
-      # Persist SQLite database across container recreations
-      - backend-data:/app/data
-      # Persist Python cache for faster imports
-      - backend-pycache:/app/__pycache__
       # Mount SSL certificates (read-only)
       - ./prf-proxy/certs:/app/certs:ro
-    depends_on:
-      prf-file-store:
-        condition: service_healthy
+      # No data volumes — intentionally stateless
 
 # ==============================================================================
-# VOLUMES
+# VOLUMES (build cache only — no persistent data)
 # ==============================================================================
 volumes:
-  # Object storage
-  file-store-data:
-    driver: local
-  # Frontend
   frontend-dist:
     driver: local
   frontend-angular-cache:
-    driver: local
-  # Backend
-  backend-data:
-    driver: local
-  backend-pycache:
     driver: local
 
 # ==============================================================================

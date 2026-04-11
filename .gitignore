@@ -29,6 +29,10 @@
 .env.local
 .env.*.local
 
+# GENERATED FILES (staging-setup.sh, prod-setup.sh output)
+# Templates (*.template) are committed; generated files are not.
+.generated/
+
 # Docker build artifacts
 docker-compose.override.yml
 
