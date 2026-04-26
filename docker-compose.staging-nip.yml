@@ -12,10 +12,10 @@
 #   docker compose -f docker-compose.staging-nip.yml up -d --build
 #
 # ACCESS (using your local IP, e.g., 10.0.0.101):
-#   - PRF Frontend:   https://prf.10.0.0.101.nip.io
-#   - PRF API:        https://api.prf.10.0.0.101.nip.io
-#   - MinIO Console:  https://files.prf.10.0.0.101.nip.io
-#   - MinIO S3 API:   https://s3.prf.10.0.0.101.nip.io
+#   - PRF Frontend:   https://prf.10.0.0.101.nip.io  or  https://prf.10.0.0.102.nip.io
+#   - PRF API:        https://api.prf.10.0.0.101.nip.io or https://api.prf.10.0.0.102.nip.io
+#   - MinIO Console:  https://files.prf.10.0.0.101.nip.io or https://files.prf.10.0.0.102.nip.io
+#   - MinIO S3 API:   https://s3.prf.10.0.0.101.nip.io or https://s3.prf.prf.10.0.0.102.nip.io
 #
 # ==============================================================================
 # PORTS (external — via prf-proxy only)
