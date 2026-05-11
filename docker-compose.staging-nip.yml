@@ -11,6 +11,9 @@
 # USAGE:
 #   docker compose -f docker-compose.staging-nip.yml up -d --build
 #
+#  Pruning:
+#   docker compose -f docker-compose.staging-nip.yml down --volumes --remove-orphans
+#
 # ACCESS (using your local IP, e.g., 10.0.0.101):
 #   - PRF Frontend:   https://prf.10.0.0.101.nip.io  or  https://prf.10.0.0.102.nip.io
 #   - PRF API:        https://api.prf.10.0.0.101.nip.io or https://api.prf.10.0.0.102.nip.io
