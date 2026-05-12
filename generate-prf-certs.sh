@@ -64,6 +64,7 @@ fi
 # Directory structure - certs accessible to all services
 CERTS_DIR="$SCRIPT_DIR/prf-proxy/certs"
 CA_DIR="$CERTS_DIR/ca"
+KC_CERTS_DIR="$SCRIPT_DIR/prf-keycloak/certs"
 
 # Handle cleanup
 if [[ "$ENV" == "cleanup" ]]; then
@@ -73,6 +74,12 @@ if [[ "$ENV" == "cleanup" ]]; then
         rm -rf "$CERTS_DIR"
         mkdir -p "$CERTS_DIR"
         echo "  - Cleaned $CERTS_DIR"
+    fi
+
+    if [[ -d "$KC_CERTS_DIR" ]]; then
+        rm -rf "$KC_CERTS_DIR"
+        mkdir -p "$KC_CERTS_DIR"
+        echo "  - Cleaned $KC_CERTS_DIR"
     fi
 
     echo ""
@@ -197,17 +204,74 @@ rm "$CERTS_DIR/prf-proxy.csr" "$CERTS_DIR/prf-proxy.cnf"
 chmod 600 "$CERTS_DIR/prf-proxy.key"
 echo "   Proxy certificate created: $CERTS_DIR/prf-proxy.crt"
 
+# ==============================================================================
+# 3. PRF KEYCLOAK CERTIFICATE
+# ==============================================================================
+# The standalone prf-keycloak container terminates HTTPS on port 8443 and
+# needs its own cert pair signed by the same PRF CA. The Dockerfile copies
+# these into /opt/certs/prf-kc.{crt,key} at build time.
+# ==============================================================================
+
+KC_CERTS_DIR="$SCRIPT_DIR/prf-keycloak/certs"
+mkdir -p "$KC_CERTS_DIR"
+
+KC_CN="prf-keycloak"
+KC_SANS="DNS.1 = prf-keycloak
+DNS.2 = localhost
+DNS.3 = auth.localhost
+IP.1 = 127.0.0.1"
+
+echo ""
+echo "3. Generating PRF Keycloak certificate (CN=$KC_CN)..."
+openssl genrsa -out "$KC_CERTS_DIR/prf-kc.key" 2048
+
+cat > "$KC_CERTS_DIR/prf-kc.cnf" <<EOF
+[req]
+default_bits = 2048
+prompt = no
+default_md = sha256
+distinguished_name = dn
+req_extensions = v3_req
+
+[dn]
+C=US
+ST=VA
+L=Arlington
+O=Polari
+OU=PRF
+CN=$KC_CN
+
+[v3_req]
+subjectAltName = @alt_names
+
+[alt_names]
+$KC_SANS
+EOF
+
+openssl req -new -key "$KC_CERTS_DIR/prf-kc.key" -out "$KC_CERTS_DIR/prf-kc.csr" \
+    -config "$KC_CERTS_DIR/prf-kc.cnf"
+
+openssl x509 -req -in "$KC_CERTS_DIR/prf-kc.csr" -CA "$CA_CRT" \
+    -CAkey "$CA_KEY" -CAcreateserial -out "$KC_CERTS_DIR/prf-kc.crt" \
+    -days 825 -sha256 -extfile "$KC_CERTS_DIR/prf-kc.cnf" -extensions v3_req
+
+rm "$KC_CERTS_DIR/prf-kc.csr" "$KC_CERTS_DIR/prf-kc.cnf"
+chmod 600 "$KC_CERTS_DIR/prf-kc.key"
+echo "   Keycloak certificate created: $KC_CERTS_DIR/prf-kc.crt"
+
 echo ""
 echo "============================================"
 echo "PRF Certificate generation complete!"
 echo "============================================"
 echo ""
 echo "Generated certificates:"
-echo "  CA:    $CA_DIR/prf-ca.{crt,key}"
-echo "  Cert:  $CERTS_DIR/prf-proxy.{crt,key}"
+echo "  CA:        $CA_DIR/prf-ca.{crt,key}"
+echo "  Proxy:     $CERTS_DIR/prf-proxy.{crt,key}"
+echo "  Keycloak:  $KC_CERTS_DIR/prf-kc.{crt,key}"
 echo ""
 echo "These certificates can be used by:"
 echo "  - prf-proxy (NGINX reverse proxy)"
+echo "  - prf-keycloak (HTTPS listener on port 8443)"
 echo "  - prf-backend (Python/Falcon on HTTPS port 2096)"
 echo "  - prf-frontend (Angular on HTTPS port 2087)"
 echo ""

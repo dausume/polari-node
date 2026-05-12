@@ -1,0 +1,52 @@
+# ==============================================================================
+# POLARI RESEARCH FRAMEWORK - KEYCLOAK
+# ==============================================================================
+# Standalone Keycloak for the PRF-only deployment. Mirrors pol-keycloak's
+# Dockerfile but scoped to PRF: only the Polari realm + the two Polari
+# clients are imported and configured at startup.
+# ==============================================================================
+
+# Stage 1: builder — installs curl + jq into a temp rootfs
+FROM registry.access.redhat.com/ubi9/ubi:latest AS builder
+
+RUN mkdir -p /mnt/rootfs
+
+RUN dnf install --installroot /mnt/rootfs jq curl \
+    --releasever 9 --setopt install_weak_deps=false --nodocs -y \
+    && dnf --installroot /mnt/rootfs clean all
+
+# Stage 2: final Keycloak image
+FROM quay.io/keycloak/keycloak:26.2.0
+
+# Bring curl + jq across so the startup scripts can use them
+COPY --from=builder /mnt/rootfs /
+
+COPY ./startup_shells/kc.sh                /opt/startup_shells/kc.sh
+COPY ./startup_shells/kc_entrypoint.sh     /opt/startup_shells/kc_entrypoint.sh
+COPY ./startup_shells/load_realms.sh       /opt/startup_shells/load_realms.sh
+COPY ./startup_shells/configure_clients.sh /opt/startup_shells/configure_clients.sh
+
+USER root
+
+RUN chown -R 1000:0 /opt/startup_shells/*.sh && \
+    chmod -R u+x /opt/startup_shells/*.sh
+
+COPY ./realm-imports /opt/realm-imports
+
+# Certs for HTTPS listener
+COPY ./certs/prf-kc.crt /opt/certs/prf-kc.crt
+COPY ./certs/prf-kc.key /opt/certs/prf-kc.key
+RUN chown -R 1000:0 /opt/certs && \
+    chmod 600 /opt/certs/prf-kc.key && \
+    chmod 644 /opt/certs/prf-kc.crt
+
+COPY ./environments/keycloak-prf.conf /opt/keycloak/conf/keycloak.conf
+
+# Make curl + jq executable by the keycloak user
+RUN chmod +x /usr/bin/curl && \
+    chmod +x /usr/bin/jq && \
+    chown -R 1000:0 /usr/bin/curl /usr/bin/jq
+
+USER 1000
+
+ENTRYPOINT ["/opt/startup_shells/kc_entrypoint.sh"]

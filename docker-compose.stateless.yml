@@ -20,10 +20,70 @@
 #   - Backend HTTP:    localhost:3000
 #   - Backend HTTPS:   localhost:2096 (Cloudflare-compatible)
 #   - WebSocket STOMP: localhost:3001
+#   - Keycloak HTTP:   localhost:8080  (admin console + OIDC)
+#   - Keycloak HTTPS:  localhost:8443  (KC's own TLS listener)
+#
+# INTERNAL (docker-network only — for service-to-service calls):
+#   - Keycloak HTTP:   http://prf-keycloak:8080  (JWKS + admin API)
+#   - MariaDB:         prf-mariadb:3306         (Keycloak realm store; only persistent piece in "stateless" mode)
 #
 # ==============================================================================
 
 services:
+  # ===========================================================================
+  # DATABASE - MariaDB (used by prf-keycloak only; PRF backend stays stateless)
+  # ===========================================================================
+  # Note: "stateless" refers to the Polari backend not persisting domain data.
+  # Auth substrate (Keycloak's realm storage) still needs durable backing —
+  # MariaDB volume below is the auth-only persistence.
+  prf-mariadb:
+    build:
+      context: ./prf-mariadb
+      dockerfile: Dockerfile
+    container_name: prf-mariadb
+    image: prf-mariadb:stateless
+    restart: always
+    networks:
+      - polari-node-network
+    env_file:
+      - ./prf-mariadb/mariadb.env
+    volumes:
+      - prf-mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    command: >
+      --innodb-buffer-pool-size=128M
+      --innodb-log-file-size=32M
+      --max-connections=50
+
+  # ===========================================================================
+  # AUTHENTICATION - Keycloak (Polari realm)
+  # ===========================================================================
+  prf-keycloak:
+    build:
+      context: ./prf-keycloak
+      dockerfile: Dockerfile.prf-kc
+    container_name: prf-keycloak
+    image: prf-keycloak:stateless
+    networks:
+      - polari-node-network
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    env_file:
+      - ./prf-keycloak/prf-keycloak-admin.env
+    environment:
+      - JAVA_OPTS_APPEND=-Xms256m -Xmx768m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
+      - KEYCLOAK_MODE=standalone
+    depends_on:
+      prf-mariadb:
+        condition: service_healthy
+    entrypoint: ["/opt/startup_shells/kc_entrypoint.sh"]
+
   # ===========================================================================
   # FRONTEND - Angular Application
   # ===========================================================================
@@ -129,6 +189,9 @@ volumes:
   frontend-dist:
     driver: local
   frontend-angular-cache:
+    driver: local
+  # Auth-only persistence (Keycloak realm data; PRF backend remains stateless)
+  prf-mariadb-data:
     driver: local
 
 # ==============================================================================

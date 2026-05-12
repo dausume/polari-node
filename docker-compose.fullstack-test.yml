@@ -1,8 +1,63 @@
-# Docker Compose file for full-stack testing
-# Orchestrates both frontend and backend tests together
-# This allows frontend tests to make real API calls to the backend
+# ==============================================================================
+# POLARI RESEARCH FRAMEWORK - FULLSTACK TEST
+# ==============================================================================
+#
+# Orchestrates frontend + backend tests together so frontend tests can make
+# real API calls to the backend. Ephemeral — no persistent volumes; each run
+# starts from a fresh realm import and a fresh MariaDB.
+#
+# USAGE:
+#   docker compose -f docker-compose.fullstack-test.yml up --build --abort-on-container-exit
+#
+# ACCESS (only relevant if attaching to a running test container):
+#   - Keycloak HTTP:   http://prf-keycloak-test:8080  (in-network only)
+#   - MariaDB:         prf-mariadb-test:3306         (in-network only)
+#
+# Container suffixes (`-test`) prevent name collisions with dev/staging stacks.
+# ==============================================================================
 
 services:
+  # MariaDB for the test Keycloak. Ephemeral — no persistent volume in test
+  # mode; each suite run starts from a fresh realm import.
+  prf-mariadb:
+    build:
+      context: ./prf-mariadb
+      dockerfile: Dockerfile
+    container_name: prf-mariadb-test
+    image: prf-mariadb:test
+    networks:
+      - polari-fullstack-test-network
+    env_file:
+      - ./prf-mariadb/mariadb.env
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 10s
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: "no"
+
+  # Keycloak in test mode — auto-imports the Polari realm at startup so
+  # integration tests can hit a working OIDC endpoint.
+  prf-keycloak:
+    build:
+      context: ./prf-keycloak
+      dockerfile: Dockerfile.prf-kc
+    container_name: prf-keycloak-test
+    image: prf-keycloak:test
+    networks:
+      - polari-fullstack-test-network
+    env_file:
+      - ./prf-keycloak/prf-keycloak-admin.env
+    environment:
+      - JAVA_OPTS_APPEND=-Xms256m -Xmx768m
+      - KEYCLOAK_MODE=standalone
+    depends_on:
+      prf-mariadb:
+        condition: service_healthy
+    entrypoint: ["/opt/startup_shells/kc_entrypoint.sh"]
+    restart: "no"
+
   # Backend framework tests
   polari-framework-tests:
     build:

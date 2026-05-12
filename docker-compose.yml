@@ -34,6 +34,13 @@
 #   - WebSocket STOMP: http://localhost:3001
 #   - MinIO S3 API:    http://localhost:9000
 #   - MinIO Console:   http://localhost:9001
+#   - Keycloak HTTP:   http://localhost:8080   (admin console + OIDC)
+#   - Keycloak HTTPS:  https://localhost:8443  (KC's own TLS listener)
+#   - Keycloak (CA):   https://localhost:2098  (via prf-proxy, CA-trusted cert)
+#
+# INTERNAL (docker-network only — for service-to-service calls):
+#   - Keycloak HTTP:   http://prf-keycloak:8080  (JWKS + admin API)
+#   - MariaDB:         prf-mariadb:3306         (Keycloak realm store)
 #
 # ==============================================================================
 # TIERED CONFIGURATION SYSTEM
@@ -49,6 +56,59 @@
 # ==============================================================================
 
 services:
+  # ===========================================================================
+  # DATABASE - MariaDB (consolidated DB for prf-keycloak + future PRF storage)
+  # ===========================================================================
+  prf-mariadb:
+    build:
+      context: ./prf-mariadb
+      dockerfile: Dockerfile
+    container_name: prf-mariadb
+    image: prf-mariadb:dev
+    restart: always
+    networks:
+      - polari-node-network
+    env_file:
+      - ./prf-mariadb/mariadb.env
+    volumes:
+      - prf-mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    command: >
+      --innodb-buffer-pool-size=128M
+      --innodb-log-file-size=32M
+      --max-connections=50
+
+  # ===========================================================================
+  # AUTHENTICATION - Keycloak (Polari realm, auto-scaffolded at startup)
+  # ===========================================================================
+  prf-keycloak:
+    build:
+      context: ./prf-keycloak
+      dockerfile: Dockerfile.prf-kc
+    container_name: prf-keycloak
+    image: prf-keycloak:dev
+    networks:
+      - polari-node-network
+    ports:
+      # Expose directly in dev so the Angular dev server can reach it without
+      # going through prf-proxy. Production / staging routes via the proxy.
+      - "8080:8080"
+      - "8443:8443"
+    env_file:
+      - ./prf-keycloak/prf-keycloak-admin.env
+    environment:
+      - JAVA_OPTS_APPEND=-Xms256m -Xmx768m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true
+      - KEYCLOAK_MODE=standalone
+    depends_on:
+      prf-mariadb:
+        condition: service_healthy
+    entrypoint: ["/opt/startup_shells/kc_entrypoint.sh"]
+
   # ===========================================================================
   # OBJECT STORAGE - MinIO S3-Compatible File Store
   # ===========================================================================
@@ -209,6 +269,9 @@ volumes:
   backend-data:
     driver: local
   backend-pycache:
+    driver: local
+  # Authentication DB
+  prf-mariadb-data:
     driver: local
 
 # ==============================================================================

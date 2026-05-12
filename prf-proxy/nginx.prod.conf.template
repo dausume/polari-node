@@ -47,11 +47,43 @@ http {
         server prf-file-store:9001;
     }
 
+    upstream prf-keycloak {
+        server prf-keycloak:8080;
+    }
+
     # HTTP redirect to HTTPS
     server {
         listen 80;
         server_name ${PROD_DOMAIN} *.${PROD_DOMAIN};
         return 301 https://$host$request_uri;
+    }
+
+    # PRF Keycloak - auth.prf.${PROD_DOMAIN}
+    server {
+        listen 443 ssl;
+        server_name auth.prf.${PROD_DOMAIN};
+
+        ssl_certificate /etc/nginx/certs/prf-proxy.crt;
+        ssl_certificate_key /etc/nginx/certs/prf-proxy.key;
+
+        client_max_body_size 50M;
+
+        location / {
+            proxy_pass http://prf-keycloak;
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            # Hardcoded `https` so KC's admin console always generates
+            # https:// asset/iframe URLs — prevents mixed-content blocks on
+            # the 3p-cookies iframe check fronted by TLS termination.
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-Forwarded-Host  $host;
+            proxy_set_header X-Forwarded-Port  443;
+
+            proxy_connect_timeout 60s;
+            proxy_send_timeout    60s;
+            proxy_read_timeout    300s;
+        }
     }
 
     # PRF Frontend - prf.${PROD_DOMAIN}

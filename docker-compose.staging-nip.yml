@@ -17,8 +17,13 @@
 # ACCESS (using your local IP, e.g., 10.0.0.101):
 #   - PRF Frontend:   https://prf.10.0.0.101.nip.io  or  https://prf.10.0.0.102.nip.io
 #   - PRF API:        https://api.prf.10.0.0.101.nip.io or https://api.prf.10.0.0.102.nip.io
+#   - Keycloak:       https://auth.prf.10.0.0.101.nip.io or https://auth.prf.10.0.0.102.nip.io
 #   - MinIO Console:  https://files.prf.10.0.0.101.nip.io or https://files.prf.10.0.0.102.nip.io
 #   - MinIO S3 API:   https://s3.prf.10.0.0.101.nip.io or https://s3.prf.prf.10.0.0.102.nip.io
+#
+# INTERNAL (docker-network only — for backend service-to-service calls):
+#   - Keycloak HTTP:  http://prf-keycloak:8080  (JWKS + admin API consumed by backend)
+#   - MariaDB:        prf-mariadb:3306  (Keycloak's realm store; PRF backend stays on its own DB)
 #
 # ==============================================================================
 # PORTS (external — via prf-proxy only)
@@ -27,16 +32,87 @@
 #   - HTTPS:  443  (subdomain routing to all services)
 #
 # ==============================================================================
-# MEMORY BUDGET (~1.2GB total for standalone PRF)
+# MEMORY BUDGET (~2.3GB total for standalone PRF + auth substrate)
 # ==============================================================================
 #   - prf-backend:     384MB (Python)
 #   - prf-file-store:  256MB (MinIO S3 storage)
 #   - prf-frontend:     64MB (nginx static)
 #   - prf-proxy:        64MB (nginx proxy)
+#   - prf-keycloak:   1024MB (JVM — admin console + OIDC)
+#   - prf-mariadb:     512MB (Keycloak realm store)
 #   - Buffer:          ~430MB
 # ==============================================================================
 
 services:
+  # ===========================================================================
+  # DATABASE - MariaDB (consolidated DB for prf-keycloak + future PRF storage)
+  # ===========================================================================
+  prf-mariadb:
+    build:
+      context: ./prf-mariadb
+      dockerfile: Dockerfile
+    container_name: prf-mariadb
+    image: prf-mariadb:staging
+    restart: always
+    networks:
+      - polari-node-network
+    env_file:
+      - ./prf-mariadb/mariadb.env
+      - ./.generated/.env.staging
+    volumes:
+      - prf-mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+    command: >
+      --innodb-buffer-pool-size=128M
+      --innodb-log-file-size=32M
+      --max-connections=50
+      --query-cache-size=0
+      --tmp-table-size=16M
+      --max-heap-table-size=16M
+
+  # ===========================================================================
+  # AUTHENTICATION - Keycloak (Polari realm, auto-scaffolded at startup)
+  # ===========================================================================
+  prf-keycloak:
+    build:
+      context: ./prf-keycloak
+      dockerfile: Dockerfile.prf-kc
+    container_name: prf-keycloak
+    image: prf-keycloak:staging
+    networks:
+      - polari-node-network
+    env_file:
+      - ./prf-keycloak/prf-keycloak-admin.env
+      - ./.generated/.env.staging
+    environment:
+      - JAVA_OPTS_APPEND=-Xms256m -Xmx768m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true
+      - KEYCLOAK_MODE=staging
+    depends_on:
+      prf-mariadb:
+        condition: service_healthy
+    entrypoint: ["/opt/startup_shells/kc_entrypoint.sh"]
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+          cpus: '0.75'
+        reservations:
+          memory: 512M
+          cpus: '0.2'
+
   # ===========================================================================
   # PROXY - nginx subdomain routing (TLS termination)
   # ===========================================================================
@@ -66,6 +142,8 @@ services:
           memory: 32M
           cpus: '0.05'
     depends_on:
+      prf-keycloak:
+        condition: service_started
       prf-file-store:
         condition: service_healthy
       frontend:
@@ -195,6 +273,7 @@ services:
 volumes:
   file-store-data:
   backend-data:
+  prf-mariadb-data:
 
 # ==============================================================================
 # NETWORKS

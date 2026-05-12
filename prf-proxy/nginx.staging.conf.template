@@ -50,6 +50,13 @@ http {
         server prf-file-store:9001;
     }
 
+    upstream prf-keycloak {
+        # Plain HTTP — the proxy terminates TLS and forwards via the docker
+        # network. Keycloak's `proxy=passthrough` setting trusts the
+        # X-Forwarded-* headers we set below.
+        server prf-keycloak:8080;
+    }
+
     # HTTP redirect to HTTPS
     server {
         listen 80;
@@ -68,6 +75,40 @@ http {
         location / {
             return 200 'Polari Research Framework - Staging Environment';
             add_header Content-Type text/plain;
+        }
+    }
+
+    # PRF Keycloak - auth.prf.${LOCAL_IP}.nip.io
+    server {
+        listen 443 ssl;
+        server_name auth.prf.${LOCAL_IP}.nip.io;
+
+        ssl_certificate /etc/nginx/certs/prf-proxy.crt;
+        ssl_certificate_key /etc/nginx/certs/prf-proxy.key;
+
+        # Keycloak's admin console + auth flows can have larger payloads
+        # (realm exports, theme uploads) than the default 1MB.
+        client_max_body_size 50M;
+
+        location / {
+            proxy_pass http://prf-keycloak;
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            # Hardcoded `https` (not $scheme) so KC's admin console always
+            # generates https:// asset/iframe URLs. With $scheme, an internal
+            # request that hits the proxy over http (e.g. KC's own 3p-cookies
+            # iframe check) would flip the header to `http` and trigger
+            # mixed-content blocks on the parent https page.
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-Forwarded-Host  $host;
+            proxy_set_header X-Forwarded-Port  443;
+
+            # Keycloak admin console occasionally takes a moment to render
+            # large realm pages.
+            proxy_connect_timeout 60s;
+            proxy_send_timeout    60s;
+            proxy_read_timeout    300s;
         }
     }
 

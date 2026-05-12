@@ -1,0 +1,294 @@
+{
+  "id": "b3a7c100-1111-4000-a000-000000000001",
+  "realm": "Polari",
+  "displayName": "Polari Suite",
+  "displayNameHtml": "Polari Suite",
+  "notBefore": 0,
+  "defaultSignatureAlgorithm": "RS256",
+  "revokeRefreshToken": false,
+  "refreshTokenMaxReuse": 0,
+  "accessTokenLifespan": 300,
+  "accessTokenLifespanForImplicitFlow": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "offlineSessionIdleTimeout": 2592000,
+  "offlineSessionMaxLifespan": 5184000,
+  "accessCodeLifespan": 60,
+  "accessCodeLifespanUserAction": 300,
+  "accessCodeLifespanLogin": 1800,
+  "actionTokenGeneratedByAdminLifespan": 43200,
+  "actionTokenGeneratedByUserLifespan": 300,
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": true,
+  "registrationEmailAsUsername": false,
+  "rememberMe": true,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": false,
+
+  "roles": {
+    "realm": [
+      {
+        "id": "b3a7c100-2000-4000-a000-000000000001",
+        "name": "polari-admin",
+        "description": "Full administrative access to the Polari suite — can manage classes, solutions, equations, and users.",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "b3a7c100-1111-4000-a000-000000000001",
+        "attributes": {}
+      },
+      {
+        "id": "b3a7c100-2000-4000-a000-000000000002",
+        "name": "polari-developer",
+        "description": "Can create and modify classes, no-code solutions, equations, datasets. Cannot manage users.",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "b3a7c100-1111-4000-a000-000000000001",
+        "attributes": {}
+      },
+      {
+        "id": "b3a7c100-2000-4000-a000-000000000003",
+        "name": "polari-user",
+        "description": "Can run and interact with no-code solutions and view dashboards.",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "b3a7c100-1111-4000-a000-000000000001",
+        "attributes": {}
+      },
+      {
+        "id": "b3a7c100-2000-4000-a000-000000000004",
+        "name": "polari-viewer",
+        "description": "Read-only access to dashboards and class instance tables.",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "b3a7c100-1111-4000-a000-000000000001",
+        "attributes": {}
+      },
+      {
+        "id": "b3a7c100-2000-4000-a000-000000000010",
+        "name": "offline_access",
+        "description": "${role_offline-access}",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "b3a7c100-1111-4000-a000-000000000001",
+        "attributes": {}
+      },
+      {
+        "id": "b3a7c100-2000-4000-a000-000000000011",
+        "name": "uma_authorization",
+        "description": "${role_uma_authorization}",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "b3a7c100-1111-4000-a000-000000000001",
+        "attributes": {}
+      },
+      {
+        "id": "b3a7c100-2000-4000-a000-000000000020",
+        "name": "default-roles-polari",
+        "description": "${role_default-roles}",
+        "composite": true,
+        "composites": {
+          "realm": ["offline_access", "uma_authorization"],
+          "client": {
+            "account": ["manage-account", "view-profile"]
+          }
+        },
+        "clientRole": false,
+        "containerId": "b3a7c100-1111-4000-a000-000000000001",
+        "attributes": {}
+      }
+    ],
+    "client": {}
+  },
+
+  "groups": [
+    {
+      "id": "b3a7c100-3000-4000-a000-000000000001",
+      "name": "Polari Administrators",
+      "path": "/Polari Administrators",
+      "subGroups": [],
+      "attributes": {
+        "polari-group-type": ["Administrative"]
+      },
+      "realmRoles": ["polari-admin", "polari-developer", "polari-user"],
+      "clientRoles": {}
+    },
+    {
+      "id": "b3a7c100-3000-4000-a000-000000000002",
+      "name": "Polari Developers",
+      "path": "/Polari Developers",
+      "subGroups": [],
+      "attributes": {
+        "polari-group-type": ["Developer"]
+      },
+      "realmRoles": ["polari-developer", "polari-user"],
+      "clientRoles": {}
+    },
+    {
+      "id": "b3a7c100-3000-4000-a000-000000000003",
+      "name": "Polari Users",
+      "path": "/Polari Users",
+      "subGroups": [],
+      "attributes": {
+        "polari-group-type": ["End-User"]
+      },
+      "realmRoles": ["polari-user"],
+      "clientRoles": {}
+    },
+    {
+      "id": "b3a7c100-3000-4000-a000-000000000004",
+      "name": "Polari Viewers",
+      "path": "/Polari Viewers",
+      "subGroups": [],
+      "attributes": {
+        "polari-group-type": ["Read-Only"]
+      },
+      "realmRoles": ["polari-viewer"],
+      "clientRoles": {}
+    }
+  ],
+
+  "defaultRole": {
+    "id": "b3a7c100-2000-4000-a000-000000000020",
+    "name": "default-roles-polari",
+    "description": "${role_default-roles}",
+    "composite": true,
+    "clientRole": false,
+    "containerId": "b3a7c100-1111-4000-a000-000000000001"
+  },
+
+  "requiredCredentials": ["password"],
+
+  "clients": [
+    {
+      "id": "b3a7c100-4000-4000-a000-000000000001",
+      "clientId": "polari-frontend",
+      "name": "Polari Frontend",
+      "description": "Public OIDC client for the Polari Angular frontend. Standard auth-code flow with PKCE.",
+      "rootUrl": "http://localhost:4200/",
+      "adminUrl": "http://localhost:4200/",
+      "baseUrl": "http://localhost:4200/",
+      "surrogateAuthRequired": false,
+      "enabled": true,
+      "alwaysDisplayInConsole": true,
+      "clientAuthenticatorType": "client-secret",
+      "redirectUris": [
+        "http://localhost:4200/*",
+        "http://localhost:4200/"
+      ],
+      "webOrigins": ["*"],
+      "notBefore": 0,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "publicClient": true,
+      "frontchannelLogout": true,
+      "protocol": "openid-connect",
+      "attributes": {
+        "oidc.ciba.grant.enabled": "false",
+        "backchannel.logout.session.required": "true",
+        "post.logout.redirect.uris": "+",
+        "frontchannel.logout.session.required": "true",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "display.on.consent.screen": "false",
+        "use.jwks.url": "false",
+        "backchannel.logout.revoke.offline.tokens": "false",
+        "pkce.code.challenge.method": "S256"
+      },
+      "authenticationFlowBindingOverrides": {},
+      "fullScopeAllowed": true,
+      "nodeReRegistrationTimeout": -1,
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "roles",
+        "profile",
+        "basic",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt"
+      ]
+    },
+    {
+      "id": "b3a7c100-4000-4000-a000-000000000002",
+      "clientId": "polari-backend",
+      "name": "Polari Backend",
+      "description": "Confidential OIDC client for the Polari Python backend. Used for token verification and service-to-service calls.",
+      "surrogateAuthRequired": false,
+      "enabled": true,
+      "alwaysDisplayInConsole": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "polari-backend-dev-secret-change-me",
+      "redirectUris": [],
+      "webOrigins": [],
+      "notBefore": 0,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "publicClient": false,
+      "frontchannelLogout": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "oidc.ciba.grant.enabled": "false",
+        "backchannel.logout.session.required": "true",
+        "post.logout.redirect.uris": "",
+        "frontchannel.logout.session.required": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "display.on.consent.screen": "false",
+        "use.jwks.url": "false"
+      },
+      "authenticationFlowBindingOverrides": {},
+      "fullScopeAllowed": true,
+      "nodeReRegistrationTimeout": -1,
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "roles",
+        "profile",
+        "basic",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt"
+      ]
+    }
+  ],
+
+  "internationalizationEnabled": false,
+  "supportedLocales": [],
+  "browserSecurityHeaders": {
+    "contentSecurityPolicyReportOnly": "",
+    "xContentTypeOptions": "nosniff",
+    "referrerPolicy": "no-referrer",
+    "xRobotsTag": "none",
+    "xFrameOptions": "SAMEORIGIN",
+    "contentSecurityPolicy": "frame-src 'self'; frame-ancestors 'self'; object-src 'none';",
+    "xXSSProtection": "1; mode=block",
+    "strictTransportSecurity": "max-age=31536000; includeSubDomains"
+  },
+  "smtpServer": {},
+  "eventsEnabled": false,
+  "eventsListeners": ["jboss-logging"],
+  "enabledEventTypes": [],
+  "adminEventsEnabled": false,
+  "adminEventsDetailsEnabled": false,
+
+  "adminPermissionsEnabled": true
+}
