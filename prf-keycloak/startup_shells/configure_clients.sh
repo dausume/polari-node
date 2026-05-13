@@ -50,13 +50,18 @@ BASE_REDIRECT_URIS=(
 
 PRF_SUBDOMAIN_REDIRECT_URIS=()
 if [ -n "$KC_HOSTNAME" ]; then
-    BASE_DOMAIN="${KC_HOSTNAME#auth.}"
-    echo "Deriving redirect URIs from KC_HOSTNAME=$KC_HOSTNAME (base domain: $BASE_DOMAIN)"
+    # Standalone-PRF subdomain layout: auth.prf.<ip>.nip.io + prf.<ip>.nip.io
+    # — stripping "auth." from KC_HOSTNAME already yields the frontend host,
+    # so we use it directly. (The suite's configure_clients.sh prepends
+    # "prf." because its KC_HOSTNAME is auth.<ip>.nip.io without the prf.
+    # tier; copying that pattern here would produce prf.prf.<ip>.nip.io.)
+    FRONTEND_HOST="${KC_HOSTNAME#auth.}"
+    echo "Deriving redirect URIs from KC_HOSTNAME=$KC_HOSTNAME (frontend host: $FRONTEND_HOST)"
     PRF_SUBDOMAIN_REDIRECT_URIS=(
-        "https://prf.${BASE_DOMAIN}/*"
-        "https://prf.${BASE_DOMAIN}"
-        "https://app.prf.${BASE_DOMAIN}/*"
-        "https://app.prf.${BASE_DOMAIN}"
+        "https://${FRONTEND_HOST}/*"
+        "https://${FRONTEND_HOST}"
+        "https://app.${FRONTEND_HOST}/*"
+        "https://app.${FRONTEND_HOST}"
     )
 elif [ "$MODE" = "staging" ] || [ "$MODE" = "production" ]; then
     echo "WARNING: MODE=$MODE but KC_HOSTNAME is not set. Subdomain URIs skipped."
