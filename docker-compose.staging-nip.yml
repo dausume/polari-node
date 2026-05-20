@@ -231,6 +231,11 @@ services:
       - polari-node-network
     env_file:
       - ./.generated/.env.staging
+      # Service-account secret for the polari-backend KC client. Without
+      # this the backend can't authenticate to Keycloak's admin API and
+      # the Role sync silently returns empty (KeycloakClient.configured
+      # short-circuits on missing secret).
+      - ./prf-keycloak/prf-keycloak-admin.env
     environment:
       - DEPLOY_ENV=staging
       - IN_DOCKER_CONTAINER=true

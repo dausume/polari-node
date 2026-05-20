@@ -227,6 +227,9 @@ services:
       - polari-node-network
     env_file:
       - ./.generated/.env.prod
+      # Service-account secret for the polari-backend KC client (see
+      # staging compose for rationale).
+      - ./prf-keycloak/prf-keycloak-admin.env
     environment:
       - DEPLOY_ENV=production
       - IN_DOCKER_CONTAINER=true
