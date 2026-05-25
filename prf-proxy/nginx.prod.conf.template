@@ -51,6 +51,55 @@ http {
         server prf-keycloak:8080;
     }
 
+    # ==========================================================================
+    # DEFAULT-SERVER FALLBACK — host mismatch diagnostic
+    # ==========================================================================
+    # Triggered when a request's Host header doesn't match ANY configured
+    # server_name. Indicates the setup script was last run with a
+    # different PROD_DOMAIN than the host actually accepts requests for,
+    # or the proxy is fronting a DNS name not in the prod config.
+    # ==========================================================================
+    server {
+        listen 80 default_server;
+        listen 443 ssl default_server;
+        server_name _;
+
+        ssl_certificate /etc/nginx/certs/prf-proxy.crt;
+        ssl_certificate_key /etc/nginx/certs/prf-proxy.key;
+
+        default_type text/html;
+
+        location / {
+            return 503 '<!DOCTYPE html>
+<html><head><title>PRF — Proxy host mismatch</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 2rem; background: #fff8e6; color: #2a2a2a; }
+  .card { max-width: 720px; margin: 2rem auto; background: #fff; border: 1px solid #e0c66a; border-radius: 8px; padding: 1.5rem 2rem; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+  h1 { color: #8a4b00; margin-top: 0; }
+  code { background: #f4ecd6; padding: 1px 6px; border-radius: 3px; font-size: 0.95em; }
+  pre { background: #2a2a2a; color: #f0f0f0; padding: 10px 14px; border-radius: 4px; overflow-x: auto; font-size: 0.85rem; }
+  ol li { margin: 8px 0; }
+  .muted { color: #666; font-size: 0.9rem; }
+</style></head>
+<body><div class="card">
+<h1>Proxy host mismatch — server setup needs rerunning</h1>
+<p>The PRF nginx proxy received a request whose <code>Host</code> header does not match any configured server. The proxy config was generated for one domain but is now fronting another.</p>
+<p>The proxy is currently configured for: <code>*.${PROD_DOMAIN}</code></p>
+<p><strong>Fix:</strong></p>
+<ol>
+<li>Stop and prune all PRF containers <strong>and their volumes</strong> (the cert + config volumes are baked to the old domain):
+<pre>sudo docker compose -f docker-compose.prod.yml down -v
+sudo docker system prune -af --volumes</pre></li>
+<li>Re-run the setup script <em>before</em> bringing the stack back up — it regenerates nginx config, certs, env files, and the runtime config for the configured PROD_DOMAIN:
+<pre>./prod-setup.sh</pre></li>
+<li>Bring the stack back up:
+<pre>sudo docker compose -f docker-compose.prod.yml up -d --build</pre></li>
+</ol>
+<p class="muted">See the comments at the top of the docker-compose file for the documented URL pattern and port layout.</p>
+</div></body></html>';
+        }
+    }
+
     # HTTP redirect to HTTPS
     server {
         listen 80;
