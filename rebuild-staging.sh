@@ -45,11 +45,18 @@ DEFAULT_SERVICES=(backend frontend)
 
 PROXY_ONLY=false
 ALL=false
+FRESH_DATA=false
 SERVICES=()
 for arg in "$@"; do
     case "$arg" in
         --proxy-only)  PROXY_ONLY=true ;;
         --all)         ALL=true ;;
+        # Wipe the backend object DB (SQLite in the backend-data volume) so
+        # the next boot re-seeds EVERYTHING from scratch. Needed whenever a
+        # *SimState / definition class gains new fields — seeding is
+        # idempotent-by-name and won't backfill new columns onto existing
+        # rows, so stale rows otherwise render with default (0) values.
+        --fresh-data)  FRESH_DATA=true ;;
         -*)            echo -e "${R}[error]${NC} unknown flag: $arg"; exit 1 ;;
         *)             SERVICES+=("$arg") ;;
     esac
@@ -64,6 +71,19 @@ elif [[ ${#SERVICES[@]} -eq 0 ]]; then
 fi
 
 cd "$SCRIPT_DIR"
+
+# --fresh-data: tear down + drop the backend object-DB volume so polari.db
+# is recreated and ALL seeds re-run (with any new schema fields). Other
+# volumes (MariaDB, MinIO) are left intact. Compose project name defaults to
+# the directory name, so the volume is "<dir>_backend-data".
+if $FRESH_DATA; then
+    PROJECT="$(basename "$SCRIPT_DIR")"
+    DATA_VOLUME="${PROJECT}_backend-data"
+    echo -e "${Y}[fresh-data]${NC} wiping object DB volume ${DATA_VOLUME} — all data re-seeds on boot."
+    sudo docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down
+    sudo docker volume rm "$DATA_VOLUME" 2>/dev/null \
+        || echo -e "${Y}[fresh-data]${NC} volume ${DATA_VOLUME} not present (already clean)."
+fi
 
 if ! $PROXY_ONLY; then
     if [[ ${#SERVICES[@]} -eq 0 ]]; then
