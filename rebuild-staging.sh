@@ -15,6 +15,10 @@
 #   ./rebuild-staging.sh backend frontend keycloak   # arbitrary service list
 #   ./rebuild-staging.sh --all                 # rebuild every service
 #   ./rebuild-staging.sh --proxy-only          # skip rebuilds, just bounce proxy
+#   ./rebuild-staging.sh --no-prune            # keep dangling images/build cache
+#
+# After a successful build the script prunes DANGLING images + build cache
+# (on by default) so repeated rebuilds don't fill the disk. --no-prune skips it.
 #
 # Re-runs the compose `up -d` for the chosen services with --build, then
 # `restart prf-proxy`. Output is whatever docker compose prints; the
@@ -46,11 +50,17 @@ DEFAULT_SERVICES=(backend frontend)
 PROXY_ONLY=false
 ALL=false
 FRESH_DATA=false
+NO_PRUNE=false
 SERVICES=()
 for arg in "$@"; do
     case "$arg" in
         --proxy-only)  PROXY_ONLY=true ;;
         --all)         ALL=true ;;
+        # Skip the post-build prune of dangling images + build cache. The
+        # prune is ON by default because repeated `up -d --build` runs leave
+        # the previous (now untagged) image behind every time and fill the
+        # disk (we hit ENOSPC). Pass --no-prune to keep old layers around.
+        --no-prune)    NO_PRUNE=true ;;
         # Wipe the backend object DB (SQLite in the backend-data volume) so
         # the next boot re-seeds EVERYTHING from scratch. Needed whenever a
         # *SimState / definition class gains new fields — seeding is
@@ -111,6 +121,18 @@ sudo docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
     restart prf-proxy
 
 echo -e "${G}[done]${NC} stack is up."
+
+# Reclaim disk from the rebuild. Every `up -d --build` retags the service
+# image and leaves the PREVIOUS build dangling (untagged), and the buildkit
+# cache grows unbounded — repeated rebuilds otherwise fill the disk (ENOSPC).
+# We prune ONLY dangling images + build cache here, AFTER the stack is up, so
+# the just-built images (now tagged and held by running containers) and all
+# named volumes (backend-data, MariaDB, MinIO) are never touched.
+if ! $NO_PRUNE; then
+    echo -e "${B}[prune]${NC} reclaiming dangling images + build cache…"
+    sudo docker image prune -f   >/dev/null 2>&1 || true
+    sudo docker builder prune -f >/dev/null 2>&1 || true
+fi
 
 # Detect the active LOCAL_IP from the generated env file. Drives both
 # the access-URL block and the sanity probe below.
