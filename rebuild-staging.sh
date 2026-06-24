@@ -39,9 +39,19 @@ if [[ ! -f "$COMPOSE_FILE" ]]; then
     exit 1
 fi
 if [[ ! -f "$ENV_FILE" ]]; then
-    echo -e "${R}[error]${NC} env file not found: $ENV_FILE"
-    echo -e "        run ./staging-setup.sh first"
-    exit 1
+    # First run on this box: bootstrap the env (IP auto-detect, nginx conf, KC
+    # creds, frontend config) instead of bailing — staging-setup.sh is fully
+    # non-interactive, so the main shell can run it. Override the IP with
+    # OVERRIDE_IP=x.x.x.x if auto-detect picks the wrong interface.
+    if [[ -f "$SCRIPT_DIR/staging-setup.sh" ]]; then
+        echo -e "${Y}[bootstrap]${NC} no env yet — running staging-setup.sh to generate it…"
+        bash "$SCRIPT_DIR/staging-setup.sh"
+    fi
+    if [[ ! -f "$ENV_FILE" ]]; then
+        echo -e "${R}[error]${NC} env file still not found: $ENV_FILE"
+        echo -e "        run ./staging-setup.sh manually (or set OVERRIDE_IP) and retry"
+        exit 1
+    fi
 fi
 
 # Default services to rebuild when no args are passed.
@@ -81,6 +91,42 @@ elif [[ ${#SERVICES[@]} -eq 0 ]]; then
 fi
 
 cd "$SCRIPT_DIR"
+
+# LOCAL_IP drives the staging hostnames AND the cert SANs. Read it early so the
+# cert step below and the access-URL block at the end both use it.
+LOCAL_IP=$(grep -oP '^LOCAL_IP=\K.*' "$ENV_FILE" 2>/dev/null | tr -d '"' || true)
+
+# ---- ensure staging TLS certs exist (step-ca) BEFORE building ----------------
+# The proxy/keycloak Dockerfiles COPY these certs at build time, so they must be
+# in place first. We detect missing / expiring / wrong-IP certs and (re)issue
+# them via the rf-node's own CA toolkit (ca/setup-ca.sh), then wire them into the
+# compose mount locations. Idempotent — a no-op when valid certs already match.
+# So you never run the CA setup separately: the main staging shell handles it.
+ensure_staging_certs() {
+    local ca="$SCRIPT_DIR/ca"
+    [[ -f "$ca/setup-ca.sh" ]] || { echo -e "${Y}[certs]${NC} no ca/ toolkit — skipping (using existing certs)"; return 0; }
+    [[ -n "$LOCAL_IP" ]]       || { echo -e "${Y}[certs]${NC} LOCAL_IP unknown — skipping cert auto-setup"; return 0; }
+    local base="${LOCAL_IP}.nip.io"
+    local crt="$ca/issued/prf-proxy.crt"
+    # (Re)issue when the proxy cert is absent, within 7 days of expiry, or its
+    # SANs don't include this server's hostname (e.g. the IP changed).
+    if [[ ! -f "$crt" ]] \
+       || ! openssl x509 -in "$crt" -checkend 604800 >/dev/null 2>&1 \
+       || ! openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null | grep -q "prf.${base}"; then
+        echo -e "${B}[certs]${NC} issuing staging certs (step-ca) for ${base}…"
+        BASE_DOMAIN="$base" DEPLOY_ENV=staging bash "$ca/setup-ca.sh" staging --non-interactive
+    else
+        echo -e "${G}[certs]${NC} staging certs present, valid, match ${base} (skip)"
+    fi
+    # Place issued certs where the proxy + keycloak Dockerfiles COPY them.
+    install -D -m644 "$ca/issued/prf-proxy.crt" "$SCRIPT_DIR/prf-proxy/certs/prf-proxy.crt"
+    install -D -m600 "$ca/issued/prf-proxy.key" "$SCRIPT_DIR/prf-proxy/certs/prf-proxy.key"
+    install -D -m644 "$ca/root_ca.crt"          "$SCRIPT_DIR/prf-proxy/certs/ca/prf-ca.crt"
+    install -D -m644 "$ca/issued/prf-kc.crt"    "$SCRIPT_DIR/prf-keycloak/certs/prf-kc.crt"
+    install -D -m600 "$ca/issued/prf-kc.key"    "$SCRIPT_DIR/prf-keycloak/certs/prf-kc.key"
+    echo -e "${G}[certs]${NC} wired certs into prf-proxy/ + prf-keycloak/"
+}
+ensure_staging_certs
 
 # --fresh-data: tear down + drop the backend object-DB volume so polari.db
 # is recreated and ALL seeds re-run (with any new schema fields). Other

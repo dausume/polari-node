@@ -1,0 +1,10 @@
+# CA runtime material — NEVER commit. Only the scripts + cert-manifest.conf are
+# tracked; everything below is generated per-host and contains private keys /
+# secrets (CA root + intermediate keys, the password file, issued service keys,
+# Let's Encrypt creds).
+.step/
+issued/
+.generated/
+secrets/
+*.key
+root_ca.crt
