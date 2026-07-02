@@ -31,6 +31,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.staging-nip.yml"
 ENV_FILE="$SCRIPT_DIR/.generated/.env.staging"
 
+# Use plain docker when the daemon is reachable without sudo (user in the
+# docker group — also what lets headless/agent shells run this script);
+# fall back to sudo docker otherwise (needs a terminal for the password).
+if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo docker"; fi
+
 # Colors
 G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[0;34m'; NC='\033[0m'
 
@@ -136,19 +141,19 @@ if $FRESH_DATA; then
     PROJECT="$(basename "$SCRIPT_DIR")"
     DATA_VOLUME="${PROJECT}_backend-data"
     echo -e "${Y}[fresh-data]${NC} wiping object DB volume ${DATA_VOLUME} — all data re-seeds on boot."
-    sudo docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down
-    sudo docker volume rm "$DATA_VOLUME" 2>/dev/null \
+    $DOCKER compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down
+    $DOCKER volume rm "$DATA_VOLUME" 2>/dev/null \
         || echo -e "${Y}[fresh-data]${NC} volume ${DATA_VOLUME} not present (already clean)."
 fi
 
 if ! $PROXY_ONLY; then
     if [[ ${#SERVICES[@]} -eq 0 ]]; then
         echo -e "${B}[rebuild]${NC} building ALL services (with --build)…"
-        sudo docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
+        $DOCKER compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
             up -d --build
     else
         echo -e "${B}[rebuild]${NC} building: ${SERVICES[*]}"
-        sudo docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
+        $DOCKER compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
             up -d --build "${SERVICES[@]}"
     fi
 fi
@@ -160,10 +165,10 @@ fi
 # not already running and is a no-op when the stack is already healthy. This is
 # what makes the script work from both a cold start and a warm rebuild.
 echo -e "${B}[stack]${NC} ensuring all services are up…"
-sudo docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
+$DOCKER compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
 
 echo -e "${B}[proxy]${NC} bouncing prf-proxy to re-resolve upstream IPs…"
-sudo docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
+$DOCKER compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
     restart prf-proxy
 
 echo -e "${G}[done]${NC} stack is up."
@@ -176,8 +181,8 @@ echo -e "${G}[done]${NC} stack is up."
 # named volumes (backend-data, MariaDB, MinIO) are never touched.
 if ! $NO_PRUNE; then
     echo -e "${B}[prune]${NC} reclaiming dangling images + build cache…"
-    sudo docker image prune -f   >/dev/null 2>&1 || true
-    sudo docker builder prune -f >/dev/null 2>&1 || true
+    $DOCKER image prune -f   >/dev/null 2>&1 || true
+    $DOCKER builder prune -f >/dev/null 2>&1 || true
 fi
 
 # Detect the active LOCAL_IP from the generated env file. Drives both
