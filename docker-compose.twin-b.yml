@@ -1,0 +1,101 @@
+# ==============================================================================
+# POLARI TWIN — INSTANCE B (shared-infra twin of the staging stack)
+# ==============================================================================
+#
+# Instance A = the existing docker-compose.staging-nip.yml stack, UNTOUCHED.
+# Instance B = a second backend + frontend REUSING A's images and A's shared
+# infrastructure (Keycloak, MariaDB, MinIO) over A's compose network, plus the
+# dedicated `polari-link` peer network for instance-to-instance traffic.
+#
+# Launch via ./twin-polari-build.sh (it creates polari-link, wires instance A
+# into it, generates B's runtime config + peer token, brings this up under
+# project name `polari-twin-b`, and runs the peer-registration handshake).
+#
+# TLS/proxy choice for this milestone: B serves PLAIN HTTP on explicit host
+# ports (API 8081, frontend 8082, websocket 8083) — no second proxy, no
+# per-instance certs. Peer traffic rides the internal docker networks where
+# TLS buys nothing; browser access to B is http://<LOCAL_IP>:8082. A proper
+# prf-b.<ip>.nip.io + cert setup is a later polish item (the CA toolkit is
+# ready for it) once the twin proves itself.
+#
+# Auth choice: B reuses A's Keycloak realm + clients (SIMPLEST THAT WORKS —
+# same issuer/JWKS env as A). A proper per-instance setup would add a second
+# realm (or per-instance clients) in Keycloak + per-instance redirect URIs;
+# deliberately not built yet.
+# ==============================================================================
+
+services:
+  backend-b:
+    image: prf-backend:staging          # REUSED — never built here
+    container_name: prf-b-backend
+    restart: unless-stopped
+    networks:
+      - polari-link
+      - a-net                            # shared keycloak/mariadb/minio live here
+    ports:
+      - "8081:3000"                      # B's API, plain HTTP
+      - "8083:3001"                      # B's STOMP websocket
+    env_file:
+      - ./.generated/.env.staging
+      - ./prf-keycloak/prf-keycloak-admin.env
+    environment:
+      - DEPLOY_ENV=staging
+      - IN_DOCKER_CONTAINER=true
+      - INTERNAL_API_URL=http://localhost:3000
+      - DATABASE_TYPE=sqlite
+      - DATABASE_PATH=./data/polari.db
+      - OBJECT_STORAGE_ENABLED=true
+      - MINIO_ENDPOINT=prf-file-store:9000
+      - MINIO_ACCESS_KEY=polari-admin
+      - MINIO_SECRET_KEY=polari-file-store-password
+      - WEBSOCKET_ENABLED=true
+      - WEBSOCKET_PORT=3001
+      # --- twin identity + peer trust (set by twin-polari-build.sh) ---
+      - POLARI_INSTANCE_ID=b
+      - POLARI_INSTANCE_NAME=polari-b
+      - POLARI_PEER_TOKEN=${POLARI_PEER_TOKEN:?run twin-polari-build.sh}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      start_period: 60s
+      retries: 6
+    volumes:
+      - backend-b-data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 1024M                  # dask-capable sizing (plan doc)
+          cpus: '0.8'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+
+  frontend-b:
+    image: prf-frontend:staging          # REUSED
+    container_name: prf-b-frontend
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "8082:4200"                      # B's UI, plain HTTP (the frontend
+                                         # image's nginx listens on 4200)
+    volumes:
+      - ./.generated/prf-b-runtime-config.json:/usr/share/nginx/html/assets/runtime-config.json:ro
+    depends_on:
+      - backend-b
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.2'
+
+volumes:
+  backend-b-data:
+
+networks:
+  polari-link:
+    external: true                       # created by twin-polari-build.sh
+  a-net:
+    external: true
+    name: polari-rf-node_polari-node-network
