@@ -20,7 +20,9 @@
 #   3. Generates B's frontend runtime config (plain-HTTP ports).
 #   4. Brings up instance B (project `polari-twin-b`) — same images, own
 #      data volume, shared Keycloak/MariaDB/MinIO over A's network.
-#   5. Registers each instance as the other's peer (shared token).
+#   5. Links the pair via the PeerAgreement admission flow (B join-requests,
+#      this script approves on A as the operator, B registers with its
+#      per-child token); the shared token is only the deprecated fallback.
 #
 # Instance A stays fully intact: same URLs, same flow, same rebuild script.
 # ==============================================================================
@@ -145,15 +147,50 @@ if [[ "$state" != "healthy" ]]; then
 fi
 echo -e "${G}[twin]${NC} instance B healthy."
 
-# ---- 5. peer registration handshake ----------------------------------------
-# B learns about A (reachable as prf-backend over the shared networks):
-curl -s -X POST "$B_API/api/peers/register" -H 'Content-Type: application/json' \
-     -d "{\"name\": \"a\", \"baseUrl\": \"http://prf-backend:3000\", \"token\": \"$TOKEN\"}" >/dev/null \
-    && echo -e "${G}[twin]${NC} registered A as a peer of B."
-# A learns about B (reachable as prf-b-backend over polari-link):
-curl -k -s -X POST "$A_API/api/peers/register" -H 'Content-Type: application/json' \
-     -d "{\"name\": \"b\", \"baseUrl\": \"http://prf-b-backend:3000\", \"token\": \"$TOKEN\"}" >/dev/null \
-    && echo -e "${G}[twin]${NC} registered B as a peer of A."
+# ---- 5. peer handshake: the PeerAgreement admission flow --------------------
+# (Mesh convergence ruling: explicit bilateral agreement. B sends a join
+# request to A; this script is the operator flipping A's approve knob; B
+# then polls, receives its per-child token, and registers with it. The
+# shared token above remains only as the DEPRECATED fallback knob.)
+AUTOCONF_BODY='{"myBaseUrl": "http://prf-b-backend:3000", "parentUrl": "http://prf-backend:3000"}'
+JOIN1=$(curl -s -X POST "$B_API/api/peers/autoconfig" \
+             -H 'Content-Type: application/json' -d "$AUTOCONF_BODY")
+AID=$(printf %s "$JOIN1" | python3 -c \
+    'import json,sys; d=json.load(sys.stdin).get("data",{}); print(d.get("join",{}).get("agreementId",""))' \
+    2>/dev/null || true)
+JOINED1=$(printf %s "$JOIN1" | python3 -c \
+    'import json,sys; print(json.load(sys.stdin).get("data",{}).get("joined",""))' \
+    2>/dev/null || true)
+if [[ "$JOINED1" == "True" ]]; then
+    echo -e "${G}[twin]${NC} B already joined A (approved agreement reused)."
+elif [[ -n "$AID" ]]; then
+    echo -e "${B}[twin]${NC} B's join request is agreement $AID — approving on A (operator knob)…"
+    curl -k -s -X POST "$A_API/api/peers/agreements/$AID/approve" \
+         -H 'Content-Type: application/json' \
+         -d '{"approvedBy": "twin-polari-build.sh"}' >/dev/null
+    JOIN2=$(curl -s -X POST "$B_API/api/peers/autoconfig" \
+                 -H 'Content-Type: application/json' -d "$AUTOCONF_BODY")
+    JOINED2=$(printf %s "$JOIN2" | python3 -c \
+        'import json,sys; print(json.load(sys.stdin).get("data",{}).get("joined",""))' \
+        2>/dev/null || true)
+    if [[ "$JOINED2" == "True" ]]; then
+        echo -e "${G}[twin]${NC} B joined A via PeerAgreement (per-child token; both peer rows set)."
+    else
+        echo -e "${R}[twin]${NC} agreement join did not complete — falling back to the deprecated shared token."
+        curl -s -X POST "$B_API/api/peers/register" -H 'Content-Type: application/json' \
+             -d "{\"name\": \"a\", \"baseUrl\": \"http://prf-backend:3000\", \"token\": \"$TOKEN\"}" >/dev/null
+        curl -k -s -X POST "$A_API/api/peers/register" -H 'Content-Type: application/json' \
+             -d "{\"name\": \"b\", \"baseUrl\": \"http://prf-b-backend:3000\", \"token\": \"$TOKEN\"}" >/dev/null
+    fi
+else
+    echo -e "${R}[twin]${NC} autoconfig unavailable (old image?) — using the deprecated shared-token handshake."
+    curl -s -X POST "$B_API/api/peers/register" -H 'Content-Type: application/json' \
+         -d "{\"name\": \"a\", \"baseUrl\": \"http://prf-backend:3000\", \"token\": \"$TOKEN\"}" >/dev/null \
+        && echo -e "${G}[twin]${NC} registered A as a peer of B."
+    curl -k -s -X POST "$A_API/api/peers/register" -H 'Content-Type: application/json' \
+         -d "{\"name\": \"b\", \"baseUrl\": \"http://prf-b-backend:3000\", \"token\": \"$TOKEN\"}" >/dev/null \
+        && echo -e "${G}[twin]${NC} registered B as a peer of A."
+fi
 
 echo ""
 echo -e "${G}[twin done]${NC} two Polari instances are linked."
