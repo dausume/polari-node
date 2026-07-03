@@ -60,6 +60,32 @@ if [[ "$cmd" == "status" ]]; then
     exit 0
 fi
 
+# ---- dask stack: one scheduler (A-side) + one worker per instance side ----
+COMPOSE_DASK="$SCRIPT_DIR/docker-compose.dask.yml"
+PROJECT_DASK="polari-dask"
+
+if [[ "$cmd" == "dask-up" ]]; then
+    $DOCKER network inspect polari-link >/dev/null 2>&1 \
+        || { echo -e "${R}[error]${NC} polari-link missing — run ./twin-polari-build.sh first"; exit 1; }
+    echo -e "${B}[dask]${NC} starting scheduler + a-worker + b-worker on polari-link…"
+    $DOCKER compose -p "$PROJECT_DASK" -f "$COMPOSE_DASK" up -d
+    echo -e "${G}[dask]${NC} up. Point searches at it with:"
+    echo '    {"executionBackend": "dask", "daskScheduler": "tcp://prf-dask-scheduler:8786"}'
+    exit 0
+fi
+
+if [[ "$cmd" == "dask-down" ]]; then
+    $DOCKER compose -p "$PROJECT_DASK" -f "$COMPOSE_DASK" down
+    echo -e "${G}[dask]${NC} dask stack down."
+    exit 0
+fi
+
+if [[ "$cmd" == "dask-status" ]]; then
+    $DOCKER ps --filter "name=prf-dask-scheduler" --filter "name=prf-a-dask-worker" \
+        --filter "name=prf-b-dask-worker" --format '{{.Names}}\t{{.Status}}'
+    exit 0
+fi
+
 # ---- 1. peer network -----------------------------------------------------
 $DOCKER network inspect polari-link >/dev/null 2>&1 \
     || $DOCKER network create polari-link

@@ -1,0 +1,64 @@
+# ==============================================================================
+# docker-compose.dask.yml — the twin's Dask stack (DISTRIBUTED_COMPUTE_PLAN)
+# ==============================================================================
+# One scheduler (conceptually on instance A) + one worker PER INSTANCE SIDE,
+# all on the polari-link network the twin created. Reuses the backend image
+# (dask[distributed] is in its requirements; version/code parity across
+# workers is therefore guaranteed) — zero additional image disk.
+#
+# Managed by:  ./twin-polari-build.sh dask-up | dask-down | dask-status
+# Consumed by: the search endpoint with
+#   {"executionBackend": "dask", "daskScheduler": "tcp://prf-dask-scheduler:8786"}
+# (or POLARI_DASK_SCHEDULER set on the backends). Workers unpickle the pure
+# attempt tasks by importing simulations.attempt_task — PYTHONPATH=/app makes
+# the framework importable in the worker processes.
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  dask-scheduler:
+    image: prf-backend:staging
+    container_name: prf-dask-scheduler
+    command: ["/opt/venv/bin/dask", "scheduler", "--port", "8786", "--no-dashboard"]
+    environment:
+      - PYTHONPATH=/app
+    networks:
+      - polari-link
+    mem_limit: 512m
+    restart: unless-stopped
+
+  # Instance A's worker.
+  dask-worker-a:
+    image: prf-backend:staging
+    container_name: prf-a-dask-worker
+    command: ["/opt/venv/bin/dask", "worker", "tcp://prf-dask-scheduler:8786",
+              "--name", "a-worker", "--nthreads", "2",
+              "--memory-limit", "700MB", "--no-dashboard"]
+    environment:
+      - PYTHONPATH=/app
+    networks:
+      - polari-link
+    mem_limit: 768m
+    restart: unless-stopped
+    depends_on:
+      - dask-scheduler
+
+  # Instance B's worker (same host in the twin lab; conceptually B's side —
+  # on real multi-machine deployments this service runs on B's hardware).
+  dask-worker-b:
+    image: prf-backend:staging
+    container_name: prf-b-dask-worker
+    command: ["/opt/venv/bin/dask", "worker", "tcp://prf-dask-scheduler:8786",
+              "--name", "b-worker", "--nthreads", "2",
+              "--memory-limit", "700MB", "--no-dashboard"]
+    environment:
+      - PYTHONPATH=/app
+    networks:
+      - polari-link
+    mem_limit: 768m
+    restart: unless-stopped
+    depends_on:
+      - dask-scheduler
