@@ -1,0 +1,15 @@
+# Embedded-Jinja/ansible-orchestration/Dockerfile.setup
+FROM python:3.9-slim-buster
+
+# Mount everything to the ansible container in the docker-compose.
+# Then shift our working directory to the volume where everything was mounted.
+WORKDIR /embed-jinja
+
+# Install ansible on the temparary setup container.
+RUN pip install ansible
+
+# Install any other dependencies your playbook requires.
+# RUN pip install -r requirements.txt
+
+# Define the command that runs your playbook.
+ENTRYPOINT ["./ansible-orchestration/start-setup.sh"]

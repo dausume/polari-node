@@ -1,0 +1,46 @@
+# ==============================================================================
+# setup.yml — core file for jinja-gen (the embed-jinja idiom from Isle-Mesh)
+# ==============================================================================
+# ONE logical file drives generated docker-compose/docker files: pick the
+# environment under current-setup, run jinja-gen/, and jinja-build/ holds
+# the rendered files. Templates live in jinja-templates/ (authored .j2)
+# or are extracted from sources carrying '# start-jinja' markers — same
+# flow as Isle-Mesh/embed-jinja (read from isle-core 2026-07-06).
+#
+#   ansible-playbook jinja-gen/playbook.yml            # render
+#   jinja-gen/check-parity.sh                          # rendered == handwritten
+# ==============================================================================
+
+current-setup:
+  env: staging
+
+environments:
+  staging:
+    tier: staging
+    msci_engines:
+      image_tag: staging
+      port: 9500
+      with_qe: false
+      mem_limit: 1g
+      network: polari-link      # '' = no external network (remote machines)
+      publish_port: true
+    remote_worker:
+      core_ip_default: 192.168.0.210
+      scheduler_port_default: 8786
+      engines_image_tag: remote
+
+  # Prod stub — same shape, different knobs; regenerating the stale
+  # prod compose family from here is the follow-up step.
+  prod:
+    tier: prod
+    msci_engines:
+      image_tag: prod
+      port: 9500
+      with_qe: true
+      mem_limit: 2g
+      network: polari-link
+      publish_port: false
+    remote_worker:
+      core_ip_default: ''
+      scheduler_port_default: 8786
+      engines_image_tag: prod-remote

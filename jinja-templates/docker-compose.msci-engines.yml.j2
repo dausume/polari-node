@@ -1,0 +1,30 @@
+# GENERATED from jinja-templates/docker-compose.msci-engines.yml.j2 —
+# edit the template + setup.yml, then: ansible-playbook jinja-gen/playbook.yml
+# (env: {{ active_env_name }})
+
+{% if msci_engines.network %}
+networks:
+  {{ msci_engines.network }}:
+    external: true
+{% endif %}
+
+services:
+  msci-engines:
+    build:
+      context: ./msci-engines
+{% if msci_engines.with_qe %}
+      args:
+        WITH_QE: "1"
+{% endif %}
+    image: prf-msci-engines:{{ msci_engines.image_tag }}
+    container_name: prf-msci-engines
+    restart: unless-stopped
+{% if msci_engines.network %}
+    networks:
+      - {{ msci_engines.network }}
+{% endif %}
+{% if msci_engines.publish_port %}
+    ports:
+      - "{{ msci_engines.port }}:9500"
+{% endif %}
+    mem_limit: {{ msci_engines.mem_limit }}
