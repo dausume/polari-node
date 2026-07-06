@@ -1,0 +1,326 @@
+# ==============================================================================
+# node-model.yml — THE core file the compose variants are generated from
+# ==============================================================================
+# (MATERIALS_SCIENCE_MODULE_PLAN Track 4 / Dustin's directive: "core files
+# that logically generate them all".)
+#
+# Structure:
+#   defaults:  named fragments referenced by services (resource presets,
+#              shared env blocks) — the DRY layer.
+#   services:  every service defined ONCE.
+#   variants:  each generated compose file = a set of services (with
+#              per-variant overrides), volumes, networks. `parity_with`
+#              names the handwritten file the generated one must match
+#              (docker compose config semantic equality) before any
+#              replacement happens.
+#
+# Regenerate:  python3 compose-gen/generate.py          (-> .generated/compose/)
+# Verify:      python3 compose-gen/generate.py --check
+# ==============================================================================
+
+tier: staging
+
+defaults:
+  resources:
+    nano:   {limits: {memory: 64M,   cpus: '0.2'},  reservations: {memory: 32M,  cpus: '0.05'}}
+    small:  {limits: {memory: 256M,  cpus: '0.3'},  reservations: {memory: 128M, cpus: '0.1'}}
+    medium: {limits: {memory: 384M,  cpus: '0.4'},  reservations: {memory: 128M, cpus: '0.1'}}
+    large:  {limits: {memory: 512M,  cpus: '0.5'},  reservations: {memory: 256M, cpus: '0.1'}}
+    xlarge: {limits: {memory: 1024M, cpus: '0.75'}, reservations: {memory: 512M, cpus: '0.2'}}
+    twinBackend: {limits: {memory: 1024M, cpus: '0.8'}, reservations: {memory: 256M, cpus: '0.1'}}
+    twinFrontend: {limits: {memory: 64M, cpus: '0.2'}}
+
+  envBlocks:
+    backendCore:
+      - DEPLOY_ENV=staging
+      - IN_DOCKER_CONTAINER=true
+      - INTERNAL_API_URL=http://localhost:3000
+      - DATABASE_TYPE=sqlite
+      - DATABASE_PATH=./data/polari.db
+      - OBJECT_STORAGE_ENABLED=true
+      - MINIO_ENDPOINT=prf-file-store:9000
+      - MINIO_ACCESS_KEY=polari-admin
+      - MINIO_SECRET_KEY=polari-file-store-password
+      - WEBSOCKET_ENABLED=true
+      - WEBSOCKET_PORT=3001
+    dbCombo:
+      - DATABASE_TYPE=mariadb
+      - MARIADB_HOST=prf-mariadb
+      - MARIADB_PORT=3306
+      - MARIADB_USER=polari
+      - MARIADB_PASSWORD=polaripassword
+      - MARIADB_DATABASE=polari_objects_b
+      - CACHE_BACKEND=keydb
+      - KEYDB_HOST=prf-b-keydb
+      - KEYDB_PORT=6379
+      - KEYDB_PASSWORD=polari-keydb-password
+      - MSCI_ENGINES_URL=http://prf-msci-engines:9500
+
+  backendHealthcheck: &backendHealthcheck
+    test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/', timeout=5)"]
+    interval: 10s
+    timeout: 10s
+    start_period: 240s
+    retries: 5
+
+services:
+  prf-mariadb:
+    build: {context: ./prf-mariadb, dockerfile: Dockerfile}
+    container_name: prf-mariadb
+    image: prf-mariadb:{tier}
+    restart: always
+    networks: [polari-node-network]
+    env_file: [./prf-mariadb/mariadb.env, ./.generated/.env.staging]
+    volumes: ['prf-mariadb-data:/var/lib/mysql']
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    resources: large
+    command: >
+      --innodb-buffer-pool-size=128M
+      --innodb-log-file-size=32M
+      --max-connections=50
+      --query-cache-size=0
+      --tmp-table-size=16M
+      --max-heap-table-size=16M
+
+  prf-keycloak:
+    build: {context: ./prf-keycloak, dockerfile: Dockerfile.prf-kc}
+    container_name: prf-keycloak
+    image: prf-keycloak:{tier}
+    networks: [polari-node-network]
+    env_file: [./prf-keycloak/prf-keycloak-admin.env, ./.generated/.env.staging]
+    environment:
+      - JAVA_OPTS_APPEND=-Xms256m -Xmx768m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true
+      - KEYCLOAK_MODE=staging
+    depends_on:
+      prf-mariadb: {condition: service_healthy}
+    entrypoint: ["/opt/startup_shells/kc_entrypoint.sh"]
+    resources: xlarge
+
+  prf-proxy:
+    build:
+      context: ./prf-proxy
+      dockerfile: Dockerfile
+      args: {NGINX_CONF: nginx.dev.conf}
+    container_name: prf-proxy
+    image: prf-proxy:{tier}
+    restart: always
+    ports: ['80:80', '443:443']
+    networks: [polari-node-network]
+    volumes: ['./.generated/nginx.staging.conf:/etc/nginx/nginx.conf:ro']
+    resources: nano
+    depends_on:
+      prf-keycloak: {condition: service_started}
+      prf-file-store: {condition: service_healthy}
+      frontend: {condition: service_started}
+      backend: {condition: service_healthy}
+
+  prf-file-store:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM minio/minio:latest
+        VOLUME /data
+        EXPOSE 9000 9001
+        CMD ["server", "/data", "--console-address", ":9001"]
+    container_name: prf-file-store
+    image: prf-file-store:{tier}
+    restart: always
+    networks: [polari-node-network]
+    env_file: [./.generated/.env.staging]
+    environment:
+      - MINIO_ROOT_USER=polari-admin
+      - MINIO_ROOT_PASSWORD=polari-file-store-password
+    volumes: ['file-store-data:/data']
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    resources: small
+
+  frontend:
+    build: {context: ./polari-platform-angular, dockerfile: Dockerfile.prod}
+    container_name: prf-frontend
+    image: prf-frontend:{tier}
+    restart: always
+    networks: [polari-node-network]
+    volumes: ['./.generated/prf-runtime-config.json:/usr/share/nginx/html/assets/runtime-config.json:ro']
+    resources: nano
+    depends_on: [backend]
+
+  backend:
+    build: {context: ./polari-framework}
+    container_name: prf-backend
+    image: prf-backend:{tier}
+    restart: always
+    networks: [polari-node-network]
+    env_file: [./.generated/.env.staging, ./prf-keycloak/prf-keycloak-admin.env]
+    environmentBlocks: [backendCore]
+    environment:
+      - MSCI_ENGINES_URL=http://${LOCAL_IP}:9500
+    healthcheck: *backendHealthcheck
+    volumes: ['backend-data:/app/data']
+    resources: medium
+    depends_on:
+      prf-file-store: {condition: service_healthy}
+
+  backend-b:
+    image: prf-backend:{tier}
+    container_name: prf-b-backend
+    restart: unless-stopped
+    networks: [polari-link, a-net]
+    ports: ['8081:3000', '8083:3001']
+    env_file: [./.generated/.env.staging, ./prf-keycloak/prf-keycloak-admin.env]
+    environmentBlocks: [backendCore]
+    environment:
+      - POLARI_INSTANCE_ID=b
+      - POLARI_INSTANCE_NAME=polari-b
+      - 'POLARI_PEER_TOKEN=${POLARI_PEER_TOKEN:?run twin-polari-build.sh}'
+    healthcheck:
+      <<: *backendHealthcheck
+      retries: 6
+    volumes: ['backend-b-data:/app/data']
+    resources: twinBackend
+
+  frontend-b:
+    image: prf-frontend:{tier}
+    container_name: prf-b-frontend
+    restart: unless-stopped
+    networks: [polari-link]
+    ports: ['8082:4200']
+    volumes: ['./.generated/prf-b-runtime-config.json:/usr/share/nginx/html/assets/runtime-config.json:ro']
+    depends_on: [backend-b]
+    resources: twinFrontend
+
+  dask-scheduler:
+    image: prf-backend:{tier}
+    container_name: prf-dask-scheduler
+    command: ["/opt/venv/bin/dask", "scheduler", "--port", "8786", "--no-dashboard"]
+    environment: [PYTHONPATH=/app]
+    networks: [polari-link]
+    mem_limit: 512m
+    restart: unless-stopped
+
+  dask-worker-a:
+    image: prf-backend:{tier}
+    container_name: prf-a-dask-worker
+    command: ["/opt/venv/bin/dask", "worker", "tcp://prf-dask-scheduler:8786",
+              "--name", "a-worker", "--nthreads", "2",
+              "--memory-limit", "700MB", "--no-dashboard"]
+    environment: [PYTHONPATH=/app]
+    networks: [polari-link]
+    mem_limit: 768m
+    restart: unless-stopped
+    depends_on: [dask-scheduler]
+
+  dask-worker-b:
+    image: prf-backend:{tier}
+    container_name: prf-b-dask-worker
+    command: ["/opt/venv/bin/dask", "worker", "tcp://prf-dask-scheduler:8786",
+              "--name", "b-worker", "--nthreads", "2",
+              "--memory-limit", "700MB", "--no-dashboard"]
+    environment: [PYTHONPATH=/app]
+    networks: [polari-link]
+    mem_limit: 768m
+    restart: unless-stopped
+    depends_on: [dask-scheduler]
+
+  keydb-b:
+    image: eqalpha/keydb:latest
+    container_name: prf-b-keydb
+    command: ["keydb-server", "--appendonly", "no",
+              "--requirepass", "polari-keydb-password",
+              "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    restart: unless-stopped
+    networks: [polari-link]
+    mem_limit: 160m
+
+  msci-engines:
+    build: {context: ./msci-engines}
+    container_name: prf-msci-engines
+    restart: unless-stopped
+    ports: ['9500:9500']
+    mem_limit: 1g
+
+  dask-worker-remote:
+    image: prf-backend:{tier}
+    container_name: prf-remote-dask-worker
+    profiles: [dask]
+    command: ["/opt/venv/bin/dask", "worker",
+              "tcp://${CORE_IP:-192.168.0.210}:${DASK_SCHEDULER_PORT:-8786}",
+              "--name", "${WORKER_NAME:-remote}-worker",
+              "--nthreads", "2", "--memory-limit", "700MB",
+              "--no-dashboard"]
+    environment: [PYTHONPATH=/app]
+    restart: unless-stopped
+    mem_limit: 768m
+
+variants:
+  staging-nip:
+    parity_with: docker-compose.staging-nip.yml
+    services: [prf-mariadb, prf-keycloak, prf-proxy, prf-file-store, frontend, backend]
+    volumes: [file-store-data, backend-data, prf-mariadb-data]
+    networks:
+      polari-node-network: {driver: bridge}
+
+  twin-b:
+    parity_with: docker-compose.twin-b.yml
+    parity_env: {POLARI_PEER_TOKEN: parity-check-token}
+    services: [backend-b, frontend-b]
+    volumes: [backend-b-data]
+    networks:
+      polari-link: {external: true}
+      a-net: {external: true, name: polari-rf-node_polari-node-network}
+
+  dask:
+    parity_with: docker-compose.dask.yml
+    services: [dask-scheduler, dask-worker-a, dask-worker-b]
+    networks:
+      polari-link: {external: true}
+
+  dbcombo:
+    # Overlay on twin-b: parity is checked on the COMBINED stack
+    # (twin-b + dbcombo, handwritten vs generated).
+    parity_with: docker-compose.dbcombo.yml
+    parity_overlay_on: twin-b
+    parity_env: {POLARI_PEER_TOKEN: parity-check-token}
+    services: [backend-b, keydb-b]
+    serviceOverrides:
+      backend-b:
+        dropKeys: [image, container_name, restart, networks, ports,
+                   env_file, environmentBlocks, healthcheck, volumes,
+                   resources]
+        environment: []          # replaced below — overlay carries ONLY env + depends_on
+        environmentBlocks: [backendCore]
+        environmentAppend: dbCombo
+        depends_on:
+          keydb-b: {condition: service_started}
+    overlayServiceEnvOnly:
+      backend-b: true
+    networks:
+      polari-link: {external: true}
+
+  msci-engines:
+    parity_with: docker-compose.msci-engines.yml
+    services: [msci-engines]
+    serviceOverrides:
+      msci-engines:
+        image: prf-msci-engines:{tier}
+        networks: [polari-link]
+    networks:
+      polari-link: {external: true}
+
+  remote-worker:
+    parity_with: docker-compose.remote-worker.yml
+    parity_profiles: [dask]
+    services: [msci-engines, dask-worker-remote]
+    serviceOverrides:
+      msci-engines:
+        image: prf-msci-engines:remote
