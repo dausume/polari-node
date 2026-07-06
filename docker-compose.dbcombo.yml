@@ -28,6 +28,9 @@ services:
       - KEYDB_HOST=prf-b-keydb
       - KEYDB_PORT=6379
       - KEYDB_PASSWORD=polari-keydb-password
+      # Science-engine delegation (safe when the worker is down —
+      # capability degrades to an honest suggestion).
+      - MSCI_ENGINES_URL=http://prf-msci-engines:9500
     depends_on:
       keydb-b:
         condition: service_started

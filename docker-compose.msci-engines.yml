@@ -1,0 +1,28 @@
+# ==============================================================================
+# docker-compose.msci-engines.yml — the materials-science engines worker
+# ==============================================================================
+# Debian-based science container (pyscf, pymatgen, sfepy, ASE, scikit-fem;
+# Quantum ESPRESSO via WITH_QE=1 build arg). Joins polari-link so any
+# instance (A, twin-B, remote peers later) reaches it at
+# http://prf-msci-engines:9500 — set MSCI_ENGINES_URL on a backend to let
+# materialsScience/engines/ delegate what the Alpine image can't run.
+#
+#   docker compose -p msci-engines -f docker-compose.msci-engines.yml up -d --build
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  msci-engines:
+    build:
+      context: ./msci-engines
+    image: prf-msci-engines:staging
+    container_name: prf-msci-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9500:9500"        # host-published: remote machines (Track 1) reach it too
+    mem_limit: 1g
