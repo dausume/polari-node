@@ -254,7 +254,7 @@ services:
       - WEBSOCKET_PORT=3001
       # Science-engine delegation (msci-engines worker on polari-link;
       # safe when the worker is down — capability degrades honestly)
-      - MSCI_ENGINES_URL=http://prf-msci-engines:9500
+      - MSCI_ENGINES_URL=http://${LOCAL_IP}:9500
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/', timeout=5)"]
       interval: 10s
