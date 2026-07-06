@@ -58,7 +58,9 @@ services:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/', timeout=5)"]
       interval: 10s
       timeout: 10s
-      start_period: 60s
+      # Startup replays the DB persistence pass before SERVER READY; give it
+      # the same generous window as the A-node so a full DB can't trip it.
+      start_period: 240s
       retries: 6
     volumes:
       - backend-b-data:/app/data

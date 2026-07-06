@@ -256,7 +256,9 @@ services:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/', timeout=5)"]
       interval: 10s
       timeout: 10s
-      start_period: 45s
+      # Startup replays the DB persistence pass (thousands of saved sim-state
+      # instances) before SERVER READY, which can take well over a minute.
+      start_period: 240s
       retries: 5
     volumes:
       - backend-data:/app/data
