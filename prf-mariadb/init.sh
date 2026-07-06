@@ -16,6 +16,7 @@
 set -e
 
 KC_PASS="${KC_DB_PASSWORD:-kcpassword}"
+POLARI_PASS="${POLARI_DB_PASSWORD:-polaripassword}"
 
 echo "[prf-mariadb init.sh] Initializing PRF databases and users..."
 
@@ -30,6 +31,18 @@ CREATE DATABASE IF NOT EXISTS keycloak
 
 CREATE USER IF NOT EXISTS 'kc'@'%' IDENTIFIED BY '${KC_PASS}';
 GRANT ALL PRIVILEGES ON keycloak.* TO 'kc'@'%';
+
+-- ==============================================================================
+-- POLARI OBJECT DATABASE AND USER (database.type: mariadb backends)
+-- The polari user may create per-instance schemas (polari_objects,
+-- polari_objects_b, ...) — hence the polari_objects% grant pattern.
+-- ==============================================================================
+CREATE DATABASE IF NOT EXISTS polari_objects
+    CHARACTER SET utf8mb4
+    COLLATE utf8mb4_unicode_ci;
+
+CREATE USER IF NOT EXISTS 'polari'@'%' IDENTIFIED BY '${POLARI_PASS}';
+GRANT ALL PRIVILEGES ON \`polari_objects%\`.* TO 'polari'@'%';
 
 -- ==============================================================================
 -- APPLY PRIVILEGES
