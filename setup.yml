@@ -29,6 +29,249 @@ environments:
       scheduler_port_default: 8786
       engines_image_tag: remote
 
+    # --------------------------------------------------------------------
+    # variants: — the ONE model the whole docker-compose family renders
+    # from (jinja-templates/docker-compose.<variant>.yml.j2 + the shared
+    # service macros in jinja-templates/compose_macros.jinja).
+    # Each key mirrors one compose file; the values are the knobs that can
+    # differ per deployment: image tags, container names, published ports,
+    # memory limits, env-file sets, DB tuning strings, credentials.
+    # NOTE: `${VAR}` strings are docker-compose interpolation — they pass
+    # through jinja untouched and resolve at `docker compose up` time.
+    # --------------------------------------------------------------------
+    variants: &compose_variants
+      common:
+        # Bridge network of the single-node stacks (base/stateless/staging/prod).
+        node_network: polari-node-network
+        # Isolated network for the fullstack test stack (explicit `name:`).
+        test_network: &test_net polari-fullstack-test-network
+        # External cross-instance network (created by twin-polari-build.sh).
+        link_network: polari-link
+        # Env files shared by every stack that runs the auth substrate.
+        mariadb_env: ./prf-mariadb/mariadb.env
+        kc_admin_env: ./prf-keycloak/prf-keycloak-admin.env
+        # MinIO object-store credentials + in-network endpoint.
+        minio_user: polari-admin
+        minio_password: polari-file-store-password
+        minio_endpoint: prf-file-store:9000
+        # Backend sqlite location (inside the container).
+        database_path: ./data/polari.db
+
+      # docker-compose.yml — standalone dev (SQLite + local MinIO, direct ports)
+      base:
+        mariadb:
+          image_tag: dev
+          command: &mariadb_tuning_dev >-
+            --innodb-buffer-pool-size=128M --innodb-log-file-size=32M
+            --max-connections=50
+        keycloak:
+          image_tag: dev
+          mode: standalone
+          # Full JVM opts (container-aware heap + IPv4-first networking).
+          java_opts: &kc_java_full >-
+            -Xms256m -Xmx768m -XX:+UseContainerSupport
+            -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true
+          # Exposed directly in dev so the Angular dev server can reach KC
+          # without prf-proxy; staging/prod route via the proxy instead.
+          ports: ["8080:8080", "8443:8443"]
+        file_store:
+          image: minio/minio:latest      # stock image (staging/prod bake their own)
+          ports: ["9000:9000", "9001:9001"]   # S3 API + console
+          inline_creds: true
+          explicit_command: true
+        backend:
+          stateful: true                 # sqlite+pycache volumes, MinIO, waits on file-store
+
+      # docker-compose.stateless.yml — ephemeral parallel-processing config
+      # (backend keeps NO domain data; MariaDB volume is auth-only persistence)
+      stateless:
+        mariadb:
+          image_tag: stateless
+          command: *mariadb_tuning_dev
+        keycloak:
+          image_tag: stateless
+          mode: standalone
+          java_opts: >-
+            -Xms256m -Xmx768m -XX:+UseContainerSupport
+            -XX:MaxRAMPercentage=75.0
+          ports: ["8080:8080", "8443:8443"]
+        backend:
+          stateful: false                # DATABASE_TYPE=none, no data volumes
+
+      # docker-compose.staging-nip.yml — prod-like local (nip.io subdomains,
+      # prf-proxy TLS ingress, resource limits; configs from staging-setup.sh)
+      staging_nip:
+        generated_env: &staging_env ./.generated/.env.staging
+        mariadb:
+          image_tag: staging
+          extra_env_file: [*staging_env]
+          command: &mariadb_tuning_staged >-
+            --innodb-buffer-pool-size=128M --innodb-log-file-size=32M
+            --max-connections=50 --query-cache-size=0 --tmp-table-size=16M
+            --max-heap-table-size=16M
+          deploy: &mariadb_deploy
+            limits: {memory: 512M, cpus: '0.5'}
+            reservations: {memory: 256M, cpus: '0.1'}
+        keycloak:
+          image_tag: staging
+          mode: staging
+          extra_env_file: [*staging_env]
+          java_opts: *kc_java_full
+          deploy: &keycloak_deploy
+            limits: {memory: 1024M, cpus: '0.75'}
+            reservations: {memory: 512M, cpus: '0.2'}
+        proxy:
+          image_tag: staging
+          ports: ["80:80", "443:443"]    # sole external ingress
+          nginx_conf: ./.generated/nginx.staging.conf
+          deploy: &proxy_deploy
+            limits: {memory: 64M, cpus: '0.2'}
+            reservations: {memory: 32M, cpus: '0.05'}
+        file_store:
+          image_tag: staging             # dockerfile_inline build (no stock image)
+          extra_env_file: [*staging_env]
+          inline_creds: true
+          explicit_command: true
+          deploy: &file_store_deploy
+            limits: {memory: 256M, cpus: '0.3'}
+            reservations: {memory: 128M, cpus: '0.1'}
+        frontend:
+          image_tag: staging
+          runtime_config: ./.generated/prf-runtime-config.json
+          deploy: &frontend_deploy
+            limits: {memory: 64M, cpus: '0.2'}
+            reservations: {memory: 32M, cpus: '0.05'}
+        backend:
+          image_tag: staging
+          deploy_env: staging
+          generated_env: *staging_env
+          minio_inline_creds: true       # prod takes creds from .env.prod instead
+          # Startup replays the DB persistence pass before SERVER READY —
+          # can take well over a minute on a full DB.
+          healthcheck_start_period: 240s
+          extra_env:
+            # Science-engine delegation (msci-engines worker on polari-link;
+            # safe when the worker is down — capability degrades honestly).
+            - MSCI_ENGINES_URL=http://${LOCAL_IP}:9500
+          deploy: &backend_deploy
+            limits: {memory: 384M, cpus: '0.4'}
+            reservations: {memory: 128M, cpus: '0.1'}
+
+      # docker-compose.prod.yml — real-domain production (proxy-only ingress;
+      # configs + secrets from prod-setup.sh via .generated/.env.prod)
+      prod:
+        generated_env: &prod_env ./.generated/.env.prod
+        mariadb:
+          image_tag: prod
+          extra_env_file: [*prod_env]
+          command: *mariadb_tuning_staged
+          deploy: *mariadb_deploy
+        keycloak:
+          image_tag: prod
+          mode: production
+          extra_env_file: [*prod_env]
+          java_opts: *kc_java_full
+          deploy: *keycloak_deploy
+        proxy:
+          image_tag: prod
+          ports: ["80:80", "443:443"]
+          nginx_conf: ./.generated/nginx.prod.conf
+          deploy: *proxy_deploy
+        file_store:
+          image_tag: prod
+          extra_env_file: [*prod_env]
+          inline_creds: false            # MINIO_* all come from .env.prod
+          explicit_command: false        # inline-Dockerfile CMD covers it
+          deploy: *file_store_deploy
+        frontend:
+          image_tag: prod
+          runtime_config: ./.generated/prf-runtime-config.prod.json
+          deploy: *frontend_deploy
+        backend:
+          image_tag: prod
+          deploy_env: production
+          generated_env: *prod_env
+          minio_inline_creds: false      # MINIO_ACCESS/SECRET from .env.prod
+          healthcheck_start_period: 45s
+          deploy: *backend_deploy
+
+      # docker-compose.fullstack-test.yml — ephemeral CI stack (`-test`
+      # container suffixes avoid collisions; no volumes, fresh realm per run)
+      fullstack_test:
+        mariadb:
+          image_tag: test
+          container_name: prf-mariadb-test
+          network: *test_net
+          data_volume: ''                # ephemeral — fresh DB each suite run
+          restart: "no"
+          healthcheck_interval: 5s
+          healthcheck_retries: 5
+        keycloak:
+          image_tag: test
+          container_name: prf-keycloak-test
+          network: *test_net
+          mode: standalone
+          java_opts: -Xms256m -Xmx768m   # small heap; no container tuning in CI
+          restart: "no"
+        server_port: 8000                # polari-framework-server API port
+
+      # docker-compose.twin-b.yml — instance B reusing A's staging images +
+      # shared infra (Keycloak/MariaDB/MinIO) over A's network + polari-link
+      twin_b:
+        generated_env: *staging_env
+        reused_image_tag: staging        # B never builds — reuses A's images
+        instance_id: b
+        instance_name: polari-b
+        # A's compose network, joined as external (name = project_network).
+        a_net_name: polari-rf-node_polari-node-network
+        backend:
+          api_port: 8081                 # B's API, plain HTTP
+          ws_port: 8083                  # B's STOMP websocket
+          healthcheck_start_period: 240s # same generous window as the A-node
+          healthcheck_retries: 6
+          deploy:
+            limits: {memory: 1024M, cpus: '0.8'}   # dask-capable sizing
+            reservations: {memory: 256M, cpus: '0.1'}
+        frontend:
+          port: 8082                     # B's UI, plain HTTP (nginx on 4200)
+          runtime_config: ./.generated/prf-b-runtime-config.json
+          deploy:
+            limits: {memory: 64M, cpus: '0.2'}
+
+      # docker-compose.dask.yml — the twin's Dask stack: one scheduler +
+      # one worker per instance side, all on polari-link
+      dask:
+        image: prf-backend:staging       # dask[distributed] ships in the backend image
+        scheduler:
+          container_name: prf-dask-scheduler
+          port: 8786
+          mem_limit: 512m
+        worker:                          # shared worker sizing
+          nthreads: 2
+          memory_limit: 700MB
+          mem_limit: 768m
+        workers:                         # one entry per instance side
+          - {id: a, name: a-worker, container_name: prf-a-dask-worker}
+          - {id: b, name: b-worker, container_name: prf-b-dask-worker}
+
+      # docker-compose.dbcombo.yml — overlay on twin-b: B's object DB moves
+      # to MariaDB (schema polari_objects_b) + KeyDB table cache
+      dbcombo:
+        mariadb:                         # matches prf-mariadb/mariadb.env + init.sh
+          host: prf-mariadb
+          port: 3306
+          user: polari
+          password: polaripassword
+          database: polari_objects_b
+        keydb:
+          container_name: prf-b-keydb
+          host: prf-b-keydb
+          port: 6379
+          password: polari-keydb-password
+          maxmemory: 128mb
+          mem_limit: 160m
+        msci_engines_url: http://prf-msci-engines:9500
+
   # Prod stub — same shape, different knobs; regenerating the stale
   # prod compose family from here is the follow-up step.
   prod:
@@ -44,3 +287,9 @@ environments:
       core_ip_default: ''
       scheduler_port_default: 8786
       engines_image_tag: prod-remote
+    # Mirror of the staging variants model. The variant knobs describe the
+    # compose FILES (which are env-independent today); no prod-specific
+    # basis exists for different values, so the staging model is reused
+    # verbatim (honest — no invented values). Replace the alias with an
+    # edited copy when prod deployments genuinely diverge.
+    variants: *compose_variants

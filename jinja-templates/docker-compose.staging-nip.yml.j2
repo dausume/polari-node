@@ -1,0 +1,33 @@
+# GENERATED from jinja-templates/docker-compose.staging-nip.yml.j2 —
+# edit the template + setup.yml (variants.staging_nip), then:
+#   ansible-playbook jinja-gen/playbook.yml
+# (env: {{ active_env_name }})
+#
+# POLARI RESEARCH FRAMEWORK - STAGING (nip.io subdomain routing)
+# Prod-like local stack: prf-proxy TLS ingress, resource limits,
+# healthchecks. Run ./staging-setup.sh first to produce .generated/.
+{% import 'compose_macros.jinja' as m %}
+{% set v = variants.staging_nip %}
+{% set c = variants.common %}
+
+services:
+{{ m.mariadb(v.mariadb, c) }}
+
+{{ m.keycloak(v.keycloak, c) }}
+
+{{ m.proxy(v.proxy, c) }}
+
+{{ m.file_store(v.file_store, c) }}
+
+{{ m.frontend_staged(v.frontend, c) }}
+
+{{ m.backend_staged(v.backend, c) }}
+
+volumes:
+  file-store-data:
+  backend-data:
+  prf-mariadb-data:
+
+networks:
+  {{ c.node_network }}:
+    driver: bridge

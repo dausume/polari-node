@@ -1,0 +1,41 @@
+# GENERATED from jinja-templates/docker-compose.yml.j2 —
+# edit the template + setup.yml (variants.base), then:
+#   ansible-playbook jinja-gen/playbook.yml
+# (env: {{ active_env_name }})
+#
+# POLARI RESEARCH FRAMEWORK - STANDALONE DEVELOPMENT
+# Minimalist fullstack configuration: local MinIO object storage + SQLite,
+# ports published directly (no proxy). Consume from the repo root:
+#   docker compose --project-directory . -f jinja-build/docker-compose.yml up -d --build
+{% import 'compose_macros.jinja' as m %}
+{% set v = variants.base %}
+{% set c = variants.common %}
+
+services:
+{{ m.mariadb(v.mariadb, c) }}
+
+{{ m.keycloak(v.keycloak, c) }}
+
+{{ m.file_store(v.file_store, c) }}
+
+{{ m.frontend_dev(v.frontend | default({}), c) }}
+
+{{ m.backend_dev(v.backend, c) }}
+
+volumes:
+  file-store-data:
+    driver: local
+  frontend-dist:
+    driver: local
+  frontend-angular-cache:
+    driver: local
+  backend-data:
+    driver: local
+  backend-pycache:
+    driver: local
+  prf-mariadb-data:
+    driver: local
+
+networks:
+  {{ c.node_network }}:
+    driver: bridge

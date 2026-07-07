@@ -1,0 +1,33 @@
+# GENERATED from jinja-templates/docker-compose.stateless.yml.j2 —
+# edit the template + setup.yml (variants.stateless), then:
+#   ansible-playbook jinja-gen/playbook.yml
+# (env: {{ active_env_name }})
+#
+# POLARI RESEARCH FRAMEWORK - STATELESS (No Persistence)
+# Ephemeral: NO database, NO object storage — the backend keeps everything
+# in the in-memory tree. MariaDB volume below is auth-only persistence
+# (Keycloak's realm store); the PRF backend itself stays stateless.
+{% import 'compose_macros.jinja' as m %}
+{% set v = variants.stateless %}
+{% set c = variants.common %}
+
+services:
+{{ m.mariadb(v.mariadb, c) }}
+
+{{ m.keycloak(v.keycloak, c) }}
+
+{{ m.frontend_dev(v.frontend | default({}), c) }}
+
+{{ m.backend_dev(v.backend, c) }}
+
+volumes:
+  frontend-dist:
+    driver: local
+  frontend-angular-cache:
+    driver: local
+  prf-mariadb-data:
+    driver: local
+
+networks:
+  {{ c.node_network }}:
+    driver: bridge

@@ -1,0 +1,47 @@
+# GENERATED from jinja-templates/docker-compose.dbcombo.yml.j2 —
+# edit the template + setup.yml (variants.dbcombo), then:
+#   ansible-playbook jinja-gen/playbook.yml
+# (env: {{ active_env_name }})
+#
+# Overlay for docker-compose.twin-b.yml (MATERIALS_SCIENCE_MODULE_PLAN
+# Track 3): instance A stays the LIGHTWEIGHT sqlite Polari; instance B
+# becomes the COMBO Polari — its object DB in MariaDB (shared prf-mariadb)
+# and the table cache in KeyDB. Dropping the overlay returns B to sqlite;
+# its sqlite volume is untouched either way.
+#
+#   POLARI_PEER_TOKEN="$(cat .generated/.polari-peer-token)" \
+#   docker compose -p polari-twin-b \
+#       -f docker-compose.twin-b.yml -f jinja-build/docker-compose.dbcombo.yml up -d
+{% set v = variants.dbcombo %}
+{% set c = variants.common %}
+
+services:
+  backend-b:
+    environment:
+      - DATABASE_TYPE=mariadb
+      - MARIADB_HOST={{ v.mariadb.host }}
+      - MARIADB_PORT={{ v.mariadb.port }}
+      - MARIADB_USER={{ v.mariadb.user }}
+      - MARIADB_PASSWORD={{ v.mariadb.password }}
+      - MARIADB_DATABASE={{ v.mariadb.database }}
+      - CACHE_BACKEND=keydb
+      - KEYDB_HOST={{ v.keydb.host }}
+      - KEYDB_PORT={{ v.keydb.port }}
+      - KEYDB_PASSWORD={{ v.keydb.password }}
+      # Science-engine delegation (safe when the worker is down —
+      # capability degrades to an honest suggestion).
+      - MSCI_ENGINES_URL={{ v.msci_engines_url }}
+    depends_on:
+      keydb-b:
+        condition: service_started
+
+  keydb-b:
+    image: eqalpha/keydb:latest
+    container_name: {{ v.keydb.container_name }}
+    command: ["keydb-server", "--appendonly", "no",
+              "--requirepass", "{{ v.keydb.password }}",
+              "--maxmemory", "{{ v.keydb.maxmemory }}", "--maxmemory-policy", "allkeys-lru"]
+    restart: unless-stopped
+    networks:
+      - {{ c.link_network }}
+    mem_limit: {{ v.keydb.mem_limit }}
