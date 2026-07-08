@@ -57,13 +57,36 @@ class MolecularEnergyResource:
             mf = dft.RKS(mol)
             mf.xc = body.get('xc', 'b3lyp')
             energy = mf.kernel()
-            resp.media = {'ok': True, 'engine': 'pyscf',
-                          'totalEnergyHa': float(energy),
-                          'converged': bool(mf.converged),
-                          'basis': body.get('basis', '6-31g'),
-                          'xc': body.get('xc', 'b3lyp'),
-                          'atomCount': mol.natm,
-                          'electronCount': int(mol.nelectron)}
+            result = {'ok': True, 'engine': 'pyscf',
+                      'totalEnergyHa': float(energy),
+                      'converged': bool(mf.converged),
+                      'basis': body.get('basis', '6-31g'),
+                      'xc': body.get('xc', 'b3lyp'),
+                      'atomCount': mol.natm,
+                      'electronCount': int(mol.nelectron)}
+            # Frontier orbitals (msci-23): donor/acceptor evidence for
+            # the semiconductor bias analysis. Kohn-Sham levels —
+            # approximate, said in the note.
+            try:
+                occupied = [float(e) for e, o in
+                            zip(mf.mo_energy, mf.mo_occ) if o > 0]
+                virtual = [float(e) for e, o in
+                           zip(mf.mo_energy, mf.mo_occ) if o == 0]
+                if occupied and virtual:
+                    ha_to_ev = 27.211386245988
+                    homo = max(occupied) * ha_to_ev
+                    lumo = min(virtual) * ha_to_ev
+                    result.update({
+                        'homoEv': homo, 'lumoEv': lumo,
+                        'gapEv': lumo - homo,
+                        'frontierNote': 'Kohn-Sham orbital energies — '
+                                        'approximate frontier levels '
+                                        'for donor/acceptor '
+                                        'comparison, not measured '
+                                        'IP/EA'})
+            except Exception:
+                pass
+            resp.media = result
         except Exception as e:
             resp.status = falcon.HTTP_500
             resp.media = {'ok': False, 'error': f'pyscf failed: {e}'}
