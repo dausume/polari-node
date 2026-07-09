@@ -85,6 +85,9 @@
 {% endif %}
     env_file:
       - {{ common.kc_admin_env }}
+      # KC_DB_PASSWORD env var overrides the baked keycloak-prf.conf value,
+      # keeping Keycloak in sync with the generated DB credentials.
+      - {{ common.mariadb_env }}
 {% for f in cfg.extra_env_file | default([]) %}
       - {{ f }}
 {% endfor %}
