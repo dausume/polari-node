@@ -128,7 +128,76 @@ class ConductionResource:
             resp.media = {'ok': False, 'error': f'scikit-fem failed: {e}'}
 
 
+class DarcyHeadFieldResource:
+    """aqp-3: steady Darcy head field for a self-watering pot cross-
+    section. Payload/result contract lives in darcy_solver.py (the
+    framework twin is materialsScience/engines/darcy_engine.py)."""
+
+    def on_post(self, req, resp):
+        body = json.load(req.bounded_stream)
+        try:
+            from darcy_solver import _solve_local
+            result = _solve_local(body)
+        except Exception as e:
+            resp.status = falcon.HTTP_500
+            resp.media = {'ok': False, 'error': f'darcy solve failed: {e}'}
+            return
+        if not result.get('ok'):
+            resp.status = falcon.HTTP_400
+        resp.media = result
+
+
+class DarcyDrainsResource:
+    """aqp-3: the headline drains-by-gravity verdict."""
+
+    def on_post(self, req, resp):
+        body = json.load(req.bounded_stream)
+        try:
+            from darcy_solver import _validate_payload, _solve_local
+            error = _validate_payload(body)
+            if error:
+                resp.status = falcon.HTTP_400
+                resp.media = {'ok': False, 'error': error}
+                return
+            water_level = float(body.get('water_level_m', 0) or 0)
+            lowest_output = min(float(h['z_m']) for h in body['holes']
+                                if h.get('kind') == 'output')
+            if water_level <= lowest_output:
+                resp.media = {
+                    'ok': True, 'drains': False, 'fidelity': 'geometric',
+                    'outflowRateMlS': 0.0,
+                    'limitingFactor': 'water table at/below the lowest '
+                                      'output hole',
+                    'evidence': f'water level {water_level:.4g} m <= '
+                                f'lowest output lip {lowest_output:.4g} '
+                                f'm — no head difference drives flow'}
+                return
+            result = _solve_local(body)
+            if not result.get('ok'):
+                resp.status = falcon.HTTP_400
+                resp.media = result
+                return
+            outflow_mls = float(result.get('outflowRateMlS', 0.0))
+            drains = outflow_mls > 1e-9
+            resp.media = {
+                'ok': True, 'drains': drains,
+                'outflowRateMlS': outflow_mls, 'fidelity': 'fem',
+                'limitingFactor': None if drains else
+                    'computed outflow ~ 0 despite positive head — check '
+                    'K and hole placement',
+                'evidence': f'steady Darcy solve: water level '
+                            f'{water_level:.4g} m vs lowest output '
+                            f'{lowest_output:.4g} m; outflow '
+                            f'{outflow_mls:.4g} mL/s',
+                'meshMeta': result.get('meshMeta')}
+        except Exception as e:
+            resp.status = falcon.HTTP_500
+            resp.media = {'ok': False, 'error': f'darcy solve failed: {e}'}
+
+
 app = falcon.App()
 app.add_route('/capability', CapabilityResource())
 app.add_route('/dft/molecular-energy', MolecularEnergyResource())
 app.add_route('/fem/conduction', ConductionResource())
+app.add_route('/darcy/head-field', DarcyHeadFieldResource())
+app.add_route('/darcy/drains', DarcyDrainsResource())
