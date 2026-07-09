@@ -1,0 +1,41 @@
+# ==============================================================================
+# docker-compose.cad-engines.yml — the CAD import/export worker
+# ==============================================================================
+# Debian-based container with trimesh (STL/OBJ/PLY/GLTF/GLB import; STL/OBJ/
+# GLB/glTF + three.js JSON export) and FreeCAD via WITH_FREECAD=1 build arg
+# (adds FCStd + STEP; ~1.5 GB OpenCASCADE, default off). Joins polari-link so
+# any instance reaches it at http://prf-cad-engines:9600 — set
+# CAD_ENGINES_URL on a backend to let mathshapes/cad_remote delegate the
+# imports/exports the Alpine backend image can't run. Mirrors the
+# msci-engines pattern (docker-compose.msci-engines.yml).
+#
+#   docker compose -p cad-engines -f docker-compose.cad-engines.yml up -d --build
+#   +FreeCAD:  add  --build-arg WITH_FREECAD=1  to the build.
+#
+# Swarm (run on a worker device, no registry): build here, ship the image
+#   docker save prf-cad-engines:staging | ssh <node> docker load
+# then
+#   docker service create --name prf-cad-engines \
+#     --constraint 'node.hostname==<node>' -p 9600:9600 prf-cad-engines:staging
+# (the routing mesh publishes :9600 on every node, so the backend reaches it
+#  at http://<host-ip>:9600 regardless of which node runs the task).
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  cad-engines:
+    build:
+      context: ./cad-engines
+      args:
+        WITH_FREECAD: ${WITH_FREECAD:-0}
+    image: prf-cad-engines:staging
+    container_name: prf-cad-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9600:9600"        # host-published: remote machines / swarm reach it too
+    mem_limit: 1g
