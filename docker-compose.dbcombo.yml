@@ -22,12 +22,14 @@ services:
       - MARIADB_HOST=prf-mariadb
       - MARIADB_PORT=3306
       - MARIADB_USER=polari
-      - MARIADB_PASSWORD=polaripassword
+      # Must match POLARI_DB_PASSWORD in prf-mariadb/mariadb.env (generated
+      # by staging-setup.sh; export the knob to align if regenerated).
+      - MARIADB_PASSWORD=${POLARI_OBJECTS_DB_PASS:-polaripassword}
       - MARIADB_DATABASE=polari_objects_b
       - CACHE_BACKEND=keydb
       - KEYDB_HOST=prf-b-keydb
       - KEYDB_PORT=6379
-      - KEYDB_PASSWORD=polari-keydb-password
+      - KEYDB_PASSWORD=${POLARI_KEYDB_PASS:-polari-keydb-password}
       # Science-engine delegation (safe when the worker is down —
       # capability degrades to an honest suggestion).
       - MSCI_ENGINES_URL=http://prf-msci-engines:9500
@@ -39,7 +41,7 @@ services:
     image: eqalpha/keydb:latest
     container_name: prf-b-keydb
     command: ["keydb-server", "--appendonly", "no",
-              "--requirepass", "polari-keydb-password",
+              "--requirepass", "${POLARI_KEYDB_PASS:-polari-keydb-password}",
               "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
     restart: unless-stopped
     networks:

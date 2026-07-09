@@ -96,6 +96,9 @@ services:
       - polari-node-network
     env_file:
       - ./prf-keycloak/prf-keycloak-admin.env
+      # KC_DB_PASSWORD env var overrides the baked keycloak-prf.conf value,
+      # keeping Keycloak in sync with the generated DB credentials.
+      - ./prf-mariadb/mariadb.env
       - ./.generated/.env.staging
     environment:
       - JAVA_OPTS_APPEND=-Xms256m -Xmx768m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true
@@ -170,8 +173,10 @@ services:
     env_file:
       - ./.generated/.env.staging
     environment:
-      - MINIO_ROOT_USER=polari-admin
-      - MINIO_ROOT_PASSWORD=polari-file-store-password
+      # Override knobs (export before `docker compose up`); defaults are
+      # LAN-staging-grade. Keep MINIO_* client creds on backend in sync.
+      - MINIO_ROOT_USER=${POLARI_MINIO_ROOT_USER:-polari-admin}
+      - MINIO_ROOT_PASSWORD=${POLARI_MINIO_ROOT_PASS:-polari-file-store-password}
       # MINIO_SERVER_URL and MINIO_BROWSER_REDIRECT_URL come from env_file
       # (pre-computed with LOCAL_IP by staging-setup.sh)
     volumes:
@@ -247,8 +252,8 @@ services:
       # Object Storage — MinIO enabled
       - OBJECT_STORAGE_ENABLED=true
       - MINIO_ENDPOINT=prf-file-store:9000
-      - MINIO_ACCESS_KEY=polari-admin
-      - MINIO_SECRET_KEY=polari-file-store-password
+      - MINIO_ACCESS_KEY=${POLARI_MINIO_ROOT_USER:-polari-admin}
+      - MINIO_SECRET_KEY=${POLARI_MINIO_ROOT_PASS:-polari-file-store-password}
       # WebSocket (STOMP) notifications
       - WEBSOCKET_ENABLED=true
       - WEBSOCKET_PORT=3001

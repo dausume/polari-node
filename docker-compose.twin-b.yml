@@ -46,8 +46,8 @@ services:
       - DATABASE_PATH=./data/polari.db
       - OBJECT_STORAGE_ENABLED=true
       - MINIO_ENDPOINT=prf-file-store:9000
-      - MINIO_ACCESS_KEY=polari-admin
-      - MINIO_SECRET_KEY=polari-file-store-password
+      - MINIO_ACCESS_KEY=${POLARI_MINIO_ROOT_USER:-polari-admin}
+      - MINIO_SECRET_KEY=${POLARI_MINIO_ROOT_PASS:-polari-file-store-password}
       - WEBSOCKET_ENABLED=true
       - WEBSOCKET_PORT=3001
       # --- twin identity + peer trust (set by twin-polari-build.sh) ---

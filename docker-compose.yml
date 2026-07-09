@@ -101,6 +101,9 @@ services:
       - "8443:8443"
     env_file:
       - ./prf-keycloak/prf-keycloak-admin.env
+      # KC_DB_PASSWORD env var overrides the baked keycloak-prf.conf value,
+      # keeping Keycloak in sync with the generated DB credentials.
+      - ./prf-mariadb/mariadb.env
     environment:
       - JAVA_OPTS_APPEND=-Xms256m -Xmx768m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true
       - KEYCLOAK_MODE=standalone
@@ -122,8 +125,10 @@ services:
     networks:
       - polari-node-network
     environment:
-      - MINIO_ROOT_USER=polari-admin
-      - MINIO_ROOT_PASSWORD=polari-file-store-password
+      # Override knobs (export before `docker compose up`); defaults are
+      # dev-grade. Keep MINIO_* client creds on the backend in sync.
+      - MINIO_ROOT_USER=${POLARI_MINIO_ROOT_USER:-polari-admin}
+      - MINIO_ROOT_PASSWORD=${POLARI_MINIO_ROOT_PASS:-polari-file-store-password}
     volumes:
       - file-store-data:/data
     command: server /data --console-address ":9001"
@@ -233,8 +238,8 @@ services:
       # Object Storage — MinIO enabled (local standalone instance)
       - OBJECT_STORAGE_ENABLED=true
       - MINIO_ENDPOINT=prf-file-store:9000
-      - MINIO_ACCESS_KEY=polari-admin
-      - MINIO_SECRET_KEY=polari-file-store-password
+      - MINIO_ACCESS_KEY=${POLARI_MINIO_ROOT_USER:-polari-admin}
+      - MINIO_SECRET_KEY=${POLARI_MINIO_ROOT_PASS:-polari-file-store-password}
     networks:
       - polari-node-network
     ports:

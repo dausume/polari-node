@@ -76,6 +76,8 @@ services:
       - "8443:8443"
     env_file:
       - ./prf-keycloak/prf-keycloak-admin.env
+      # KC_DB_PASSWORD env var overrides the baked keycloak-prf.conf value.
+      - ./prf-mariadb/mariadb.env
     environment:
       - JAVA_OPTS_APPEND=-Xms256m -Xmx768m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
       - KEYCLOAK_MODE=standalone
