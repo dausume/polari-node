@@ -1,0 +1,165 @@
+# jinja-start
+## SERVICE: frontend — annotated source; envs: dev+stateless+staging+prod.
+## Assembled by the bundle source per the manifest.
+## variation: env — frontend: dev | stateless | staging | prod
+# {% if env_name == 'dev' %}
+# 
+#   # ===========================================================================
+#   # FRONTEND - Angular Application
+#   # ===========================================================================
+#   frontend:
+#     build:
+#       context: ./polari-platform-angular
+#       cache_from:
+#         - polari-platform-angular:latest
+#     container_name: prf-frontend
+#     # Load defaults first, then .env overrides
+#     env_file:
+#       - .env.defaults
+#       - .env
+#     environment:
+#       # TIER 2: Startup-time overrides (can be changed without rebuild)
+#       # Backend connection settings
+#       - BACKEND_URL=${BACKEND_URL:-localhost}
+#       - BACKEND_HTTP_PORT=${BACKEND_HTTP_PORT:-3000}
+#       - BACKEND_HTTPS_PORT=${BACKEND_HTTPS_PORT:-2096}
+#       - BACKEND_PREFER_HTTPS=${BACKEND_PREFER_HTTPS:-false}
+#       # Frontend settings
+#       - FRONTEND_URL=${FRONTEND_URL:-localhost}
+#       - FRONTEND_HTTP_PORT=${FRONTEND_HTTP_PORT:-4200}
+#       - FRONTEND_HTTPS_PORT=${FRONTEND_HTTPS_PORT:-2087}
+#       # SSL settings
+#       - SSL_ENABLED=${SSL_ENABLED:-true}
+#       - SSL_CERT_PATH=/app/certs/prf-proxy.crt
+#       - SSL_KEY_PATH=/app/certs/prf-proxy.key
+#       # Connection settings (TIER 3 capable - can also change at runtime)
+#       - CONNECTION_RETRY_INTERVAL=${CONNECTION_RETRY_INTERVAL:-3000}
+#       - CONNECTION_MAX_RETRY_TIME=${CONNECTION_MAX_RETRY_TIME:-60000}
+#       - CONNECTION_TIMEOUT=${CONNECTION_TIMEOUT:-30000}
+#       # WebSocket settings
+#       - WEBSOCKET_URL=${BACKEND_URL:-localhost}
+#       - WEBSOCKET_PORT=${WEBSOCKET_PORT:-3001}
+#     ports:
+#       # HTTP port (4201 to avoid conflict with PSC on 4200)
+#       - "${FRONTEND_HTTP_PORT:-4201}:4200"
+#       # HTTPS port (Cloudflare-compatible)
+#       - "${FRONTEND_HTTPS_PORT:-2087}:2087"
+#     networks:
+#       - {{ node_network }}
+#     depends_on:
+#       - backend
+#     volumes:
+#       # Persist built Angular app across rebuilds
+#       - frontend-dist:/project/dist
+#       # Persist .angular cache for faster rebuilds
+#       - frontend-angular-cache:/project/.angular
+#       # Mount SSL certificates (read-only)
+#       - ./prf-proxy/certs:/app/certs:ro
+#       # Mount runtime config for Tier 2 startup overrides
+#       - ./polari-platform-angular/src/assets/runtime-config.json:/project/src/assets/runtime-config.json:ro
+# {% elif env_name == 'stateless' %}
+# 
+#   # ===========================================================================
+#   # FRONTEND - Angular Application
+#   # ===========================================================================
+#   frontend:
+#     build:
+#       context: ./polari-platform-angular
+#       cache_from:
+#         - polari-platform-angular:latest
+#     container_name: prf-frontend
+#     env_file:
+#       - .env.defaults
+#       - .env
+#     environment:
+#       # Backend connection settings
+#       - BACKEND_URL=${BACKEND_URL:-localhost}
+#       - BACKEND_HTTP_PORT=${BACKEND_HTTP_PORT:-3000}
+#       - BACKEND_HTTPS_PORT=${BACKEND_HTTPS_PORT:-2096}
+#       - BACKEND_PREFER_HTTPS=${BACKEND_PREFER_HTTPS:-false}
+#       # Frontend settings
+#       - FRONTEND_URL=${FRONTEND_URL:-localhost}
+#       - FRONTEND_HTTP_PORT=${FRONTEND_HTTP_PORT:-4200}
+#       - FRONTEND_HTTPS_PORT=${FRONTEND_HTTPS_PORT:-2087}
+#       # SSL settings
+#       - SSL_ENABLED=${SSL_ENABLED:-true}
+#       - SSL_CERT_PATH=/app/certs/prf-proxy.crt
+#       - SSL_KEY_PATH=/app/certs/prf-proxy.key
+#       # Connection settings
+#       - CONNECTION_RETRY_INTERVAL=${CONNECTION_RETRY_INTERVAL:-3000}
+#       - CONNECTION_MAX_RETRY_TIME=${CONNECTION_MAX_RETRY_TIME:-60000}
+#       - CONNECTION_TIMEOUT=${CONNECTION_TIMEOUT:-30000}
+#       # WebSocket settings
+#       - WEBSOCKET_URL=${BACKEND_URL:-localhost}
+#       - WEBSOCKET_PORT=${WEBSOCKET_PORT:-3001}
+#     ports:
+#       - "${FRONTEND_HTTP_PORT:-4201}:4200"
+#       - "${FRONTEND_HTTPS_PORT:-2087}:2087"
+#     networks:
+#       - {{ node_network }}
+#     depends_on:
+#       - backend
+#     volumes:
+#       # Persist build cache only (not data)
+#       - frontend-dist:/project/dist
+#       - frontend-angular-cache:/project/.angular
+#       # Mount SSL certificates (read-only)
+#       - ./prf-proxy/certs:/app/certs:ro
+#       # Mount runtime config
+#       - ./polari-platform-angular/src/assets/runtime-config.json:/project/src/assets/runtime-config.json:ro
+# {% elif env_name == 'staging' %}
+# 
+#   # ===========================================================================
+#   # FRONTEND - Angular Application (Production Build)
+#   # ===========================================================================
+#   frontend:
+#     build:
+#       context: ./polari-platform-angular
+#       dockerfile: Dockerfile.prod
+#     container_name: prf-frontend
+#     image: prf-frontend:{{ node_image_tag }}
+#     restart: always
+#     networks:
+#       - {{ node_network }}
+#     volumes:
+#       # Mount generated runtime config for nip.io URLs
+#       - ./.generated/prf-runtime-config.json:/usr/share/nginx/html/assets/runtime-config.json:ro
+#     deploy:
+#       resources:
+#         limits:
+#           memory: 64M
+#           cpus: '0.2'
+#         reservations:
+#           memory: 32M
+#           cpus: '0.05'
+#     depends_on:
+#       - backend
+# {% elif env_name == 'prod' %}
+# 
+#   # ===========================================================================
+#   # FRONTEND - Angular Application (Production Build)
+#   # ===========================================================================
+#   frontend:
+#     build:
+#       context: ./polari-platform-angular
+#       dockerfile: Dockerfile.prod
+#     container_name: prf-frontend
+#     image: prf-frontend:{{ node_image_tag }}
+#     restart: always
+#     networks:
+#       - {{ node_network }}
+#     volumes:
+#       # Mount generated runtime config for production URLs
+#       - ./.generated/prf-runtime-config.prod.json:/usr/share/nginx/html/assets/runtime-config.json:ro
+#     deploy:
+#       resources:
+#         limits:
+#           memory: 64M
+#           cpus: '0.2'
+#         reservations:
+#           memory: 32M
+#           cpus: '0.05'
+#     depends_on:
+#       - backend
+# {% endif %}
+# jinja-end

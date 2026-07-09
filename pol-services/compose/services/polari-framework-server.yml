@@ -1,0 +1,34 @@
+# jinja-start
+## SERVICE: polari-framework-server — annotated source; envs: test.
+## Assembled by the bundle source per the manifest.
+## variation: env — polari-framework-server: test
+# {% if env_name == 'test' %}
+# 
+#   # Backend API server for frontend integration testing
+#   polari-framework-server:
+#     build:
+#       context: ./polari-framework
+#       dockerfile: Dockerfile
+#     container_name: polari-framework-server
+#     environment:
+#       - DEPLOY_ENV=test
+#       - BACKEND_APP_PORT=8000
+#       - IN_DOCKER_CONTAINER=true
+#     networks:
+#       - {{ node_network }}
+#     ports:
+#       - "8000:8000"
+#     healthcheck:
+#       # Use Python to check if server is responding (no curl needed)
+#       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+#       interval: 10s
+#       timeout: 5s
+#       retries: 5
+#       start_period: 20s
+#     # Keep server running for frontend tests
+#     restart: "no"
+#     depends_on:
+#       polari-framework-tests:
+#         condition: service_completed_successfully
+# {% endif %}
+# jinja-end

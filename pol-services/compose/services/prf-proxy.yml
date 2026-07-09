@@ -1,0 +1,84 @@
+# jinja-start
+## SERVICE: prf-proxy — annotated source; envs: staging+prod.
+## Assembled by the bundle source per the manifest.
+## variation: env — prf-proxy: staging | prod
+# {% if env_name == 'staging' %}
+# 
+#   # ===========================================================================
+#   # PROXY - nginx subdomain routing (TLS termination)
+#   # ===========================================================================
+#   prf-proxy:
+#     build:
+#       context: ./prf-proxy
+#       dockerfile: Dockerfile
+#       args:
+#         NGINX_CONF: nginx.dev.conf
+#     container_name: prf-proxy
+#     image: prf-proxy:{{ node_image_tag }}
+#     restart: always
+#     ports:
+#       - "80:80"
+#       - "443:443"
+#     networks:
+#       - {{ node_network }}
+#     volumes:
+#       # Mount generated nginx config (from staging-setup.sh)
+#       - ./.generated/nginx.{{ gen_env }}.conf:/etc/nginx/nginx.conf:ro
+#     deploy:
+#       resources:
+#         limits:
+#           memory: 64M
+#           cpus: '0.2'
+#         reservations:
+#           memory: 32M
+#           cpus: '0.05'
+#     depends_on:
+#       prf-keycloak:
+#         condition: service_started
+#       prf-file-store:
+#         condition: service_healthy
+#       frontend:
+#         condition: service_started
+#       backend:
+#         condition: service_healthy
+# {% elif env_name == 'prod' %}
+# 
+#   # ===========================================================================
+#   # PROXY - nginx subdomain routing (TLS termination)
+#   # ===========================================================================
+#   prf-proxy:
+#     build:
+#       context: ./prf-proxy
+#       dockerfile: Dockerfile
+#       args:
+#         NGINX_CONF: nginx.dev.conf
+#     container_name: prf-proxy
+#     image: prf-proxy:{{ node_image_tag }}
+#     restart: always
+#     ports:
+#       - "80:80"
+#       - "443:443"
+#     networks:
+#       - {{ node_network }}
+#     volumes:
+#       # Mount generated nginx config (from prod-setup.sh)
+#       - ./.generated/nginx.{{ gen_env }}.conf:/etc/nginx/nginx.conf:ro
+#     deploy:
+#       resources:
+#         limits:
+#           memory: 64M
+#           cpus: '0.2'
+#         reservations:
+#           memory: 32M
+#           cpus: '0.05'
+#     depends_on:
+#       prf-keycloak:
+#         condition: service_started
+#       prf-file-store:
+#         condition: service_healthy
+#       frontend:
+#         condition: service_started
+#       backend:
+#         condition: service_healthy
+# {% endif %}
+# jinja-end

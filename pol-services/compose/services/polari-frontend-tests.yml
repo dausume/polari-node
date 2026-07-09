@@ -1,0 +1,33 @@
+# jinja-start
+## SERVICE: polari-frontend-tests — annotated source; envs: test.
+## Assembled by the bundle source per the manifest.
+## variation: env — polari-frontend-tests: test
+# {% if env_name == 'test' %}
+# 
+#   # Frontend tests (runs after backend is ready)
+#   polari-frontend-tests:
+#     build:
+#       context: ./polari-platform-angular
+#       dockerfile: Dockerfile.test
+#     container_name: polari-frontend-tests
+#     environment:
+#       # Enable fullstack mode for frontend tests
+#       - TEST_MODE=fullstack
+#       - BACKEND_URL=http://polari-framework-server:8000
+#     networks:
+#       - {{ node_network }}
+#     volumes:
+#       # Mount source code for development
+#       - ./polari-platform-angular/src:/app/src:ro
+#       - ./polari-platform-angular/karma.conf.js:/app/karma.conf.js:ro
+#       - ./polari-platform-angular/angular.json:/app/angular.json:ro
+#       - ./polari-platform-angular/tsconfig.json:/app/tsconfig.json:ro
+#       - ./polari-platform-angular/tsconfig.spec.json:/app/tsconfig.spec.json:ro
+#       # Mount coverage output directory
+#       - ./polari-platform-angular/coverage:/app/coverage
+#     restart: "no"
+#     depends_on:
+#       polari-framework-server:
+#         condition: service_healthy
+# {% endif %}
+# jinja-end

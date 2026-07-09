@@ -17,6 +17,10 @@ current-setup:
 environments:
   staging:
     tier: staging
+    # node-bundle keys (pol-build manifest render — per-service sources)
+    node_image_tag: staging
+    gen_env: staging
+    node_network: polari-node-network
     msci_engines:
       image_tag: staging
       port: 9500
@@ -276,6 +280,9 @@ environments:
   # prod compose family from here is the follow-up step.
   prod:
     tier: prod
+    node_image_tag: prod
+    gen_env: prod
+    node_network: polari-node-network
     msci_engines:
       image_tag: prod
       port: 9500
@@ -293,3 +300,21 @@ environments:
     # verbatim (honest — no invented values). Replace the alias with an
     # edited copy when prod deployments genuinely diverge.
     variants: *compose_variants
+
+  # Envs used only by the pol-build manifest render (node-bundle per-service
+  # sources); the legacy variants model above doesn't apply to them.
+  dev:
+    tier: dev
+    node_image_tag: dev
+    gen_env: dev
+    node_network: polari-node-network
+  stateless:
+    tier: stateless
+    node_image_tag: stateless
+    gen_env: stateless
+    node_network: polari-node-network
+  test:
+    tier: test
+    node_image_tag: test
+    gen_env: test
+    node_network: polari-fullstack-test-network

@@ -89,3 +89,6 @@ prf-mariadb/mariadb.env
 
 # Rendered output of jinja-gen (generated artifacts — never track)
 jinja-build/
+
+# Extraction mirror of pol-services/ annotated sources (generated)
+jinja-templates/

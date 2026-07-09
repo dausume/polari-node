@@ -1,0 +1,122 @@
+# jinja-start
+## SERVICE: prf-mariadb — annotated source; envs: dev+stateless+staging+prod+test.
+## Assembled by the bundle source per the manifest.
+## variation: env — prf-mariadb: dev | stateless | staging+prod | test
+# {% if env_name == 'dev' %}
+#   # ===========================================================================
+#   # DATABASE - MariaDB (consolidated DB for prf-keycloak + future PRF storage)
+#   # ===========================================================================
+#   prf-mariadb:
+#     build:
+#       context: ./prf-mariadb
+#       dockerfile: Dockerfile
+#     container_name: prf-mariadb
+#     image: prf-mariadb:{{ node_image_tag }}
+#     restart: always
+#     networks:
+#       - {{ node_network }}
+#     env_file:
+#       - ./prf-mariadb/mariadb.env
+#     volumes:
+#       - prf-mariadb-data:/var/lib/mysql
+#     healthcheck:
+#       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+#       start_period: 10s
+#       interval: 10s
+#       timeout: 5s
+#       retries: 3
+#     command: >
+#       --innodb-buffer-pool-size=128M
+#       --innodb-log-file-size=32M
+#       --max-connections=50
+# {% elif env_name == 'stateless' %}
+#   # ===========================================================================
+#   # DATABASE - MariaDB (used by prf-keycloak only; PRF backend stays stateless)
+#   # ===========================================================================
+#   # Note: "stateless" refers to the Polari backend not persisting domain data.
+#   # Auth substrate (Keycloak's realm storage) still needs durable backing —
+#   # MariaDB volume below is the auth-only persistence.
+#   prf-mariadb:
+#     build:
+#       context: ./prf-mariadb
+#       dockerfile: Dockerfile
+#     container_name: prf-mariadb
+#     image: prf-mariadb:{{ node_image_tag }}
+#     restart: always
+#     networks:
+#       - {{ node_network }}
+#     env_file:
+#       - ./prf-mariadb/mariadb.env
+#     volumes:
+#       - prf-mariadb-data:/var/lib/mysql
+#     healthcheck:
+#       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+#       start_period: 10s
+#       interval: 10s
+#       timeout: 5s
+#       retries: 3
+#     command: >
+#       --innodb-buffer-pool-size=128M
+#       --innodb-log-file-size=32M
+#       --max-connections=50
+# {% elif env_name == 'staging' or env_name == 'prod' %}
+#   # ===========================================================================
+#   # DATABASE - MariaDB (consolidated DB for prf-keycloak + future PRF storage)
+#   # ===========================================================================
+#   prf-mariadb:
+#     build:
+#       context: ./prf-mariadb
+#       dockerfile: Dockerfile
+#     container_name: prf-mariadb
+#     image: prf-mariadb:{{ node_image_tag }}
+#     restart: always
+#     networks:
+#       - {{ node_network }}
+#     env_file:
+#       - ./prf-mariadb/mariadb.env
+#       - ./.generated/.env.{{ gen_env }}
+#     volumes:
+#       - prf-mariadb-data:/var/lib/mysql
+#     healthcheck:
+#       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+#       start_period: 10s
+#       interval: 10s
+#       timeout: 5s
+#       retries: 3
+#     deploy:
+#       resources:
+#         limits:
+#           memory: 512M
+#           cpus: '0.5'
+#         reservations:
+#           memory: 256M
+#           cpus: '0.1'
+#     command: >
+#       --innodb-buffer-pool-size=128M
+#       --innodb-log-file-size=32M
+#       --max-connections=50
+#       --query-cache-size=0
+#       --tmp-table-size=16M
+#       --max-heap-table-size=16M
+# {% elif env_name == 'test' %}
+#   # MariaDB for the test Keycloak. Ephemeral — no persistent volume in test
+#   # mode; each suite run starts from a fresh realm import.
+#   prf-mariadb:
+#     build:
+#       context: ./prf-mariadb
+#       dockerfile: Dockerfile
+#     container_name: prf-mariadb-test
+#     image: prf-mariadb:{{ node_image_tag }}
+#     networks:
+#       - {{ node_network }}
+#     env_file:
+#       - ./prf-mariadb/mariadb.env
+#     healthcheck:
+#       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+#       start_period: 10s
+#       interval: 5s
+#       timeout: 5s
+#       retries: 5
+#     restart: "no"
+# {% endif %}
+# jinja-end

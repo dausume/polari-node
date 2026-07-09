@@ -1,0 +1,154 @@
+# jinja-start
+## SERVICE: prf-keycloak — annotated source; envs: dev+stateless+staging+prod+test.
+## Assembled by the bundle source per the manifest.
+## variation: env — prf-keycloak: dev | stateless | staging | prod | test
+# {% if env_name == 'dev' %}
+# 
+#   # ===========================================================================
+#   # AUTHENTICATION - Keycloak (Polari realm, auto-scaffolded at startup)
+#   # ===========================================================================
+#   prf-keycloak:
+#     build:
+#       context: ./prf-keycloak
+#       dockerfile: Dockerfile.prf-kc
+#     container_name: prf-keycloak
+#     image: prf-keycloak:{{ node_image_tag }}
+#     networks:
+#       - {{ node_network }}
+#     ports:
+#       # Expose directly in dev so the Angular dev server can reach it without
+#       # going through prf-proxy. Production / staging routes via the proxy.
+#       - "8080:8080"
+#       - "8443:8443"
+#     env_file:
+#       - ./prf-keycloak/prf-keycloak-admin.env
+#       # KC_DB_PASSWORD env var overrides the baked keycloak-prf.conf value,
+#       # keeping Keycloak in sync with the generated DB credentials.
+#       - ./prf-mariadb/mariadb.env
+#     environment:
+#       - JAVA_OPTS_APPEND=-Xms256m -Xmx768m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true
+#       - KEYCLOAK_MODE=standalone
+#     depends_on:
+#       prf-mariadb:
+#         condition: service_healthy
+#     entrypoint: ["/opt/startup_shells/kc_entrypoint.sh"]
+# {% elif env_name == 'stateless' %}
+# 
+#   # ===========================================================================
+#   # AUTHENTICATION - Keycloak (Polari realm)
+#   # ===========================================================================
+#   prf-keycloak:
+#     build:
+#       context: ./prf-keycloak
+#       dockerfile: Dockerfile.prf-kc
+#     container_name: prf-keycloak
+#     image: prf-keycloak:{{ node_image_tag }}
+#     networks:
+#       - {{ node_network }}
+#     ports:
+#       - "8080:8080"
+#       - "8443:8443"
+#     env_file:
+#       - ./prf-keycloak/prf-keycloak-admin.env
+#       # KC_DB_PASSWORD env var overrides the baked keycloak-prf.conf value.
+#       - ./prf-mariadb/mariadb.env
+#     environment:
+#       - JAVA_OPTS_APPEND=-Xms256m -Xmx768m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
+#       - KEYCLOAK_MODE=standalone
+#     depends_on:
+#       prf-mariadb:
+#         condition: service_healthy
+#     entrypoint: ["/opt/startup_shells/kc_entrypoint.sh"]
+# {% elif env_name == 'staging' %}
+# 
+#   # ===========================================================================
+#   # AUTHENTICATION - Keycloak (Polari realm, auto-scaffolded at startup)
+#   # ===========================================================================
+#   prf-keycloak:
+#     build:
+#       context: ./prf-keycloak
+#       dockerfile: Dockerfile.prf-kc
+#     container_name: prf-keycloak
+#     image: prf-keycloak:{{ node_image_tag }}
+#     networks:
+#       - {{ node_network }}
+#     env_file:
+#       - ./prf-keycloak/prf-keycloak-admin.env
+#       # KC_DB_PASSWORD env var overrides the baked keycloak-prf.conf value,
+#       # keeping Keycloak in sync with the generated DB credentials.
+#       - ./prf-mariadb/mariadb.env
+#       - ./.generated/.env.{{ gen_env }}
+#     environment:
+#       - JAVA_OPTS_APPEND=-Xms256m -Xmx768m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true
+#       - KEYCLOAK_MODE=staging
+#     depends_on:
+#       prf-mariadb:
+#         condition: service_healthy
+#     entrypoint: ["/opt/startup_shells/kc_entrypoint.sh"]
+#     deploy:
+#       resources:
+#         limits:
+#           memory: 1024M
+#           cpus: '0.75'
+#         reservations:
+#           memory: 512M
+#           cpus: '0.2'
+# {% elif env_name == 'prod' %}
+# 
+#   # ===========================================================================
+#   # AUTHENTICATION - Keycloak (Polari realm, auto-scaffolded at startup)
+#   # ===========================================================================
+#   prf-keycloak:
+#     build:
+#       context: ./prf-keycloak
+#       dockerfile: Dockerfile.prf-kc
+#     container_name: prf-keycloak
+#     image: prf-keycloak:{{ node_image_tag }}
+#     networks:
+#       - {{ node_network }}
+#     env_file:
+#       - ./prf-keycloak/prf-keycloak-admin.env
+#       # KC_DB_PASSWORD env var overrides the baked keycloak-prf.conf value.
+#       - ./prf-mariadb/mariadb.env
+#       - ./.generated/.env.{{ gen_env }}
+#     environment:
+#       - JAVA_OPTS_APPEND=-Xms256m -Xmx768m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true
+#       - KEYCLOAK_MODE=production
+#     depends_on:
+#       prf-mariadb:
+#         condition: service_healthy
+#     entrypoint: ["/opt/startup_shells/kc_entrypoint.sh"]
+#     deploy:
+#       resources:
+#         limits:
+#           memory: 1024M
+#           cpus: '0.75'
+#         reservations:
+#           memory: 512M
+#           cpus: '0.2'
+# {% elif env_name == 'test' %}
+# 
+#   # Keycloak in test mode — auto-imports the Polari realm at startup so
+#   # integration tests can hit a working OIDC endpoint.
+#   prf-keycloak:
+#     build:
+#       context: ./prf-keycloak
+#       dockerfile: Dockerfile.prf-kc
+#     container_name: prf-keycloak-test
+#     image: prf-keycloak:{{ node_image_tag }}
+#     networks:
+#       - {{ node_network }}
+#     env_file:
+#       - ./prf-keycloak/prf-keycloak-admin.env
+#       # KC_DB_PASSWORD env var overrides the baked keycloak-prf.conf value.
+#       - ./prf-mariadb/mariadb.env
+#     environment:
+#       - JAVA_OPTS_APPEND=-Xms256m -Xmx768m
+#       - KEYCLOAK_MODE=standalone
+#     depends_on:
+#       prf-mariadb:
+#         condition: service_healthy
+#     entrypoint: ["/opt/startup_shells/kc_entrypoint.sh"]
+#     restart: "no"
+# {% endif %}
+# jinja-end

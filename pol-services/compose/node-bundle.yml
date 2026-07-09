@@ -1,0 +1,318 @@
+# jinja-start
+## ==========================================================================
+## BUNDLE ASSEMBLY — generates every 'node' compose variant from
+## the per-service sources (presence-aware includes). Driven by the
+## pol-build manifest; '## variation:' notes name env groups everywhere.
+## ==========================================================================
+## variation: env — preamble: dev | stateless | staging | prod | test
+# {% if env_name == 'dev' %}
+# # ==============================================================================
+# # POLARI RESEARCH FRAMEWORK - STANDALONE DEVELOPMENT
+# # ==============================================================================
+# #
+# # Minimalist fullstack configuration with local MinIO object storage + SQLite.
+# # Runs PRF independently without the full Polari Suite.
+# #
+# # IMPORTANT: Choose ONE mode to run - do NOT mix:
+# #   - STANDALONE MODE: Run from polari-rf-node/ using THIS file
+# #   - SUITE MODE: Run from polari-suite/ using the parent docker-compose.yml
+# #
+# # Running both will cause container name conflicts!
+# #
+# # USAGE:
+# #   docker compose up -d --build
+# #   docker compose up -d --build backend     # Rebuild single service
+# #   docker compose down                      # Stop all
+# #
+# # OTHER ENVIRONMENTS:
+# #   Stateless (no DB, no MinIO - for parallel processing):
+# #       docker compose -f docker-compose.stateless.yml up -d --build
+# #   Staging (nip.io subdomains - closest to prod):
+# #       docker compose -f docker-compose.staging-nip.yml up -d --build
+# #   Production:
+# #       docker compose -f docker-compose.prod.yml up -d --build
+# #
+# # ==============================================================================
+# # PORTS
+# # ==============================================================================
+# #   - Frontend HTTP:   http://localhost:4201
+# #   - Frontend HTTPS:  http://localhost:2087 (Cloudflare-compatible)
+# #   - Backend HTTP:    http://localhost:3000
+# #   - Backend HTTPS:   http://localhost:2096 (Cloudflare-compatible)
+# #   - WebSocket STOMP: http://localhost:3001
+# #   - MinIO S3 API:    http://localhost:9000
+# #   - MinIO Console:   http://localhost:9001
+# #   - Keycloak HTTP:   http://localhost:8080   (admin console + OIDC)
+# #   - Keycloak HTTPS:  https://localhost:8443  (KC's own TLS listener)
+# #   - Keycloak (CA):   https://localhost:2098  (via prf-proxy, CA-trusted cert)
+# #
+# # INTERNAL (docker-network only — for service-to-service calls):
+# #   - Keycloak HTTP:   http://prf-keycloak:8080  (JWKS + admin API)
+# #   - MariaDB:         prf-mariadb:3306         (Keycloak realm store)
+# #
+# # ==============================================================================
+# # TIERED CONFIGURATION SYSTEM
+# # ==============================================================================
+# # TIER 1 (Build-time):   Values baked into images via Dockerfile
+# # TIER 2 (Startup-time): Environment variables below - override at 'docker-compose up'
+# # TIER 3 (Runtime):      Changed via UI/API while containers are running
+# #
+# # To override Tier 2 values, either:
+# #   1. Edit the .env file
+# #   2. Pass environment variables: BACKEND_URL=example.com docker-compose up
+# #   3. Use docker-compose.override.yml
+# # ==============================================================================
+# 
+# services:
+# {% elif env_name == 'stateless' %}
+# # ==============================================================================
+# # POLARI RESEARCH FRAMEWORK - STATELESS (No Persistence)
+# # ==============================================================================
+# #
+# # Ephemeral configuration with NO database and NO object storage.
+# # All data lives only in the in-memory tree — nothing persists between restarts.
+# #
+# # USE CASE: Scalable parallel processing containers where remembering state
+# # does not matter. Each container processes independently and discards results.
+# #
+# # USAGE:
+# #   docker compose -f docker-compose.stateless.yml up -d --build
+# #   docker compose -f docker-compose.stateless.yml down
+# #
+# # ==============================================================================
+# # PORTS
+# # ==============================================================================
+# #   - Frontend HTTP:   localhost:4201
+# #   - Frontend HTTPS:  localhost:2087 (Cloudflare-compatible)
+# #   - Backend HTTP:    localhost:3000
+# #   - Backend HTTPS:   localhost:2096 (Cloudflare-compatible)
+# #   - WebSocket STOMP: localhost:3001
+# #   - Keycloak HTTP:   localhost:8080  (admin console + OIDC)
+# #   - Keycloak HTTPS:  localhost:8443  (KC's own TLS listener)
+# #
+# # INTERNAL (docker-network only — for service-to-service calls):
+# #   - Keycloak HTTP:   http://prf-keycloak:8080  (JWKS + admin API)
+# #   - MariaDB:         prf-mariadb:3306         (Keycloak realm store; only persistent piece in "stateless" mode)
+# #
+# # ==============================================================================
+# 
+# services:
+# {% elif env_name == 'staging' %}
+# # ==============================================================================
+# # POLARI RESEARCH FRAMEWORK - STAGING (nip.io subdomain routing)
+# # ==============================================================================
+# #
+# # Purpose: Test production builds locally with subdomain routing via prf-proxy,
+# # resource limits, and healthchecks. Mirrors suite-level staging pattern.
+# #
+# # SETUP (run once, or when IP changes):
+# #   ./staging-setup.sh   # Generates .generated/ configs
+# #
+# # USAGE:
+# #   docker compose -f docker-compose.staging-nip.yml up -d --build
+# #
+# #  Pruning:
+# #   docker compose -f docker-compose.staging-nip.yml down --volumes --remove-orphans
+# #
+# # ACCESS (using your local IP, e.g., 10.0.0.101):
+# #   - PRF Frontend:   https://prf.10.0.0.101.nip.io  or  https://prf.10.0.0.102.nip.io
+# #   - PRF API:        https://api.prf.10.0.0.101.nip.io or https://api.prf.10.0.0.102.nip.io
+# #   - Keycloak:       https://auth.prf.10.0.0.101.nip.io or https://auth.prf.10.0.0.102.nip.io
+# #   - MinIO Console:  https://files.prf.10.0.0.101.nip.io or https://files.prf.10.0.0.102.nip.io
+# #   - MinIO S3 API:   https://s3.prf.10.0.0.101.nip.io or https://s3.prf.prf.10.0.0.102.nip.io
+# #
+# # INTERNAL (docker-network only — for backend service-to-service calls):
+# #   - Keycloak HTTP:  http://prf-keycloak:8080  (JWKS + admin API consumed by backend)
+# #   - MariaDB:        prf-mariadb:3306  (Keycloak's realm store; PRF backend stays on its own DB)
+# #
+# # ==============================================================================
+# # PORTS (external — via prf-proxy only)
+# # ==============================================================================
+# #   - HTTP:   80   (redirects to HTTPS)
+# #   - HTTPS:  443  (subdomain routing to all services)
+# #
+# # ==============================================================================
+# # MEMORY BUDGET (~2.3GB total for standalone PRF + auth substrate)
+# # ==============================================================================
+# #   - prf-backend:     384MB (Python)
+# #   - prf-file-store:  256MB (MinIO S3 storage)
+# #   - prf-frontend:     64MB (nginx static)
+# #   - prf-proxy:        64MB (nginx proxy)
+# #   - prf-keycloak:   1024MB (JVM — admin console + OIDC)
+# #   - prf-mariadb:     512MB (Keycloak realm store)
+# #   - Buffer:          ~430MB
+# # ==============================================================================
+# 
+# services:
+# {% elif env_name == 'prod' %}
+# # ==============================================================================
+# # POLARI RESEARCH FRAMEWORK - PRODUCTION
+# # ==============================================================================
+# #
+# # Optimized for production deployment with subdomain routing via prf-proxy,
+# # resource limits, and healthchecks.
+# #
+# # SETUP (run once, or when domain/config changes):
+# #   ./prod-setup.sh   # Generates .generated/ configs
+# #
+# # USAGE:
+# #   docker compose -f docker-compose.prod.yml up -d --build
+# #
+# # ==============================================================================
+# # ACCESS (using your configured PROD_DOMAIN, e.g., example.com):
+# # ==============================================================================
+# #   - PRF Frontend:   https://prf.example.com
+# #   - PRF API:        https://api.prf.example.com
+# #   - Keycloak:       https://auth.prf.example.com
+# #   - MinIO Console:  https://files.prf.example.com
+# #   - MinIO S3 API:   https://s3.prf.example.com
+# #
+# # INTERNAL (docker-network only — for backend service-to-service calls):
+# #   - Keycloak HTTP:  http://prf-keycloak:8080  (JWKS + admin API consumed by backend)
+# #   - MariaDB:        prf-mariadb:3306  (Keycloak's realm store)
+# #
+# # ==============================================================================
+# # PORTS (external — via prf-proxy only)
+# # ==============================================================================
+# #   - HTTP:   80   (redirects to HTTPS)
+# #   - HTTPS:  443  (subdomain routing to all services)
+# #
+# # ==============================================================================
+# # MEMORY BUDGET (~2.3GB total for standalone PRF + auth substrate)
+# # ==============================================================================
+# #   - prf-backend:     384MB (Python)
+# #   - prf-file-store:  256MB (MinIO S3 storage)
+# #   - prf-frontend:     64MB (nginx static)
+# #   - prf-proxy:        64MB (nginx proxy)
+# #   - prf-keycloak:   1024MB (JVM — admin console + OIDC)
+# #   - prf-mariadb:     512MB (Keycloak realm store)
+# #   - Buffer:          ~430MB
+# # ==============================================================================
+# 
+# services:
+# {% elif env_name == 'test' %}
+# # ==============================================================================
+# # POLARI RESEARCH FRAMEWORK - FULLSTACK TEST
+# # ==============================================================================
+# #
+# # Orchestrates frontend + backend tests together so frontend tests can make
+# # real API calls to the backend. Ephemeral — no persistent volumes; each run
+# # starts from a fresh realm import and a fresh MariaDB.
+# #
+# # USAGE:
+# #   docker compose -f docker-compose.fullstack-test.yml up --build --abort-on-container-exit
+# #
+# # ACCESS (only relevant if attaching to a running test container):
+# #   - Keycloak HTTP:   http://prf-keycloak-test:8080  (in-network only)
+# #   - MariaDB:         prf-mariadb-test:3306         (in-network only)
+# #
+# # Container suffixes (`-test`) prevent name collisions with dev/staging stacks.
+# # ==============================================================================
+# 
+# services:
+# {% endif %}
+# {% include 'pol-services/compose/services/prf-mariadb.yml.j2' %}
+# {% include 'pol-services/compose/services/prf-keycloak.yml.j2' %}
+## variation: env — prf-proxy only exists in: staging+prod
+# {% if env_name == 'staging' or env_name == 'prod' %}
+# {% include 'pol-services/compose/services/prf-proxy.yml.j2' %}
+# {% endif %}
+## variation: env — prf-file-store only exists in: dev+staging+prod
+# {% if env_name == 'dev' or env_name == 'staging' or env_name == 'prod' %}
+# {% include 'pol-services/compose/services/prf-file-store.yml.j2' %}
+# {% endif %}
+## variation: env — frontend only exists in: dev+stateless+staging+prod
+# {% if env_name == 'dev' or env_name == 'stateless' or env_name == 'staging' or env_name == 'prod' %}
+# {% include 'pol-services/compose/services/frontend.yml.j2' %}
+# {% endif %}
+## variation: env — backend only exists in: dev+stateless+staging+prod
+# {% if env_name == 'dev' or env_name == 'stateless' or env_name == 'staging' or env_name == 'prod' %}
+# {% include 'pol-services/compose/services/backend.yml.j2' %}
+# {% endif %}
+## variation: env — polari-framework-tests only exists in: test
+# {% if env_name == 'test' %}
+# {% include 'pol-services/compose/services/polari-framework-tests.yml.j2' %}
+# {% endif %}
+## variation: env — polari-framework-server only exists in: test
+# {% if env_name == 'test' %}
+# {% include 'pol-services/compose/services/polari-framework-server.yml.j2' %}
+# {% endif %}
+## variation: env — polari-frontend-tests only exists in: test
+# {% if env_name == 'test' %}
+# {% include 'pol-services/compose/services/polari-frontend-tests.yml.j2' %}
+# {% endif %}
+## variation: env — tail (networks/volumes): dev | stateless | staging+prod | test
+# {% if env_name == 'dev' %}
+# 
+# # ==============================================================================
+# # VOLUMES
+# # ==============================================================================
+# volumes:
+#   # Object storage
+#   file-store-data:
+#     driver: local
+#   # Frontend
+#   frontend-dist:
+#     driver: local
+#   frontend-angular-cache:
+#     driver: local
+#   # Backend
+#   backend-data:
+#     driver: local
+#   backend-pycache:
+#     driver: local
+#   # Authentication DB
+#   prf-mariadb-data:
+#     driver: local
+# 
+# # ==============================================================================
+# # NETWORKS
+# # ==============================================================================
+# networks:
+#   {{ node_network }}:
+#     driver: bridge
+# {% elif env_name == 'stateless' %}
+#       # No data volumes — intentionally stateless
+# 
+# # ==============================================================================
+# # VOLUMES (build cache only — no persistent data)
+# # ==============================================================================
+# volumes:
+#   frontend-dist:
+#     driver: local
+#   frontend-angular-cache:
+#     driver: local
+#   # Auth-only persistence (Keycloak realm data; PRF backend remains stateless)
+#   prf-mariadb-data:
+#     driver: local
+# 
+# # ==============================================================================
+# # NETWORKS
+# # ==============================================================================
+# networks:
+#   {{ node_network }}:
+#     driver: bridge
+# {% elif env_name == 'staging' or env_name == 'prod' %}
+# 
+# # ==============================================================================
+# # VOLUMES
+# # ==============================================================================
+# volumes:
+#   file-store-data:
+#   backend-data:
+#   prf-mariadb-data:
+# 
+# # ==============================================================================
+# # NETWORKS
+# # ==============================================================================
+# networks:
+#   {{ node_network }}:
+#     driver: bridge
+# {% elif env_name == 'test' %}
+# 
+# networks:
+#   {{ node_network }}:
+#     driver: bridge
+#     name: {{ node_network }}
+# {% endif %}
+# jinja-end

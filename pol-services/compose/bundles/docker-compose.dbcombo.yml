@@ -1,0 +1,54 @@
+# jinja-start
+## BUNDLE: docker-compose.dbcombo.yml — passthrough annotated source (no env variants;
+## conditionals get added here when variation appears, e.g. the
+## bld-5 swarm topology blocks).
+# # ==============================================================================
+# # docker-compose.dbcombo.yml — twin-B on the MariaDB + KeyDB combo
+# # ==============================================================================
+# # Overlay for docker-compose.twin-b.yml (MATERIALS_SCIENCE_MODULE_PLAN
+# # Track 3): instance A stays the LIGHTWEIGHT sqlite Polari; instance B
+# # becomes the COMBO Polari — its object DB in MariaDB (shared prf-mariadb,
+# # schema polari_objects_b) and the table cache in KeyDB.
+# #
+# #   POLARI_PEER_TOKEN="$(cat .generated/.polari-peer-token)" \
+# #   docker compose -p polari-twin-b \
+# #       -f docker-compose.twin-b.yml -f docker-compose.dbcombo.yml up -d
+# #
+# # Dropping the overlay (plain twin-b compose) returns B to sqlite; its
+# # sqlite volume is untouched either way. Credentials match prf-mariadb/
+# # mariadb.env + init.sh (the polari user has rights on polari_objects%).
+# # ==============================================================================
+# 
+# services:
+#   backend-b:
+#     environment:
+#       - DATABASE_TYPE=mariadb
+#       - MARIADB_HOST=prf-mariadb
+#       - MARIADB_PORT=3306
+#       - MARIADB_USER=polari
+#       # Must match POLARI_DB_PASSWORD in prf-mariadb/mariadb.env (generated
+#       # by staging-setup.sh; export the knob to align if regenerated).
+#       - MARIADB_PASSWORD=${POLARI_OBJECTS_DB_PASS:-polaripassword}
+#       - MARIADB_DATABASE=polari_objects_b
+#       - CACHE_BACKEND=keydb
+#       - KEYDB_HOST=prf-b-keydb
+#       - KEYDB_PORT=6379
+#       - KEYDB_PASSWORD=${POLARI_KEYDB_PASS:-polari-keydb-password}
+#       # Science-engine delegation (safe when the worker is down —
+#       # capability degrades to an honest suggestion).
+#       - MSCI_ENGINES_URL=http://prf-msci-engines:9500
+#     depends_on:
+#       keydb-b:
+#         condition: service_started
+# 
+#   keydb-b:
+#     image: eqalpha/keydb:latest
+#     container_name: prf-b-keydb
+#     command: ["keydb-server", "--appendonly", "no",
+#               "--requirepass", "${POLARI_KEYDB_PASS:-polari-keydb-password}",
+#               "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+#     restart: unless-stopped
+#     networks:
+#       - polari-link
+#     mem_limit: 160m
+# jinja-end

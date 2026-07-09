@@ -1,0 +1,55 @@
+# jinja-start
+## BUNDLE: docker-compose.remote-worker.yml — passthrough annotated source (no env variants;
+## conditionals get added here when variation appears, e.g. the
+## bld-5 swarm topology blocks).
+# # ==============================================================================
+# # docker-compose.remote-worker.yml — a REMOTE machine's worker stack
+# # ==============================================================================
+# # The core-and-remote variant (MATERIALS_SCIENCE_MODULE_PLAN Track 1):
+# # runs on a DIFFERENT machine than the core stack, reaching the core at a
+# # MANUALLY ENTERED address instead of docker DNS. Env (all manual knobs):
+# #
+# #   CORE_IP        core machine's LAN IP (e.g. 192.168.0.210) — only the
+# #                  dask worker uses it; msci-engines serves inbound only
+# #   DASK_SCHEDULER_PORT  core scheduler port (default 8786)
+# #   WORKER_NAME    this machine's worker label (e.g. lightweight)
+# #
+# # Usage on the remote machine (only msci-engines/ + this file needed):
+# #   docker compose -f docker-compose.remote-worker.yml up -d --build msci-engines
+# #   # optional compute worker (needs the core to publish 8786 and the
+# #   # prf-backend image loaded on this machine for code parity):
+# #   CORE_IP=192.168.0.210 WORKER_NAME=lightweight \
+# #     docker compose -f docker-compose.remote-worker.yml --profile dask up -d
+# #
+# # The core reaches this machine's engines at http://<remote-ip>:9500
+# # (set MSCI_ENGINES_URL there).
+# # ==============================================================================
+# 
+# services:
+#   msci-engines:
+#     build:
+#       context: ./msci-engines
+#     image: prf-msci-engines:remote
+#     container_name: prf-msci-engines
+#     restart: unless-stopped
+#     ports:
+#       - "9500:9500"
+#     mem_limit: 1g
+# 
+#   # Optional dask worker joining the core scheduler over the LAN.
+#   # Requires image parity with the core (prf-backend:staging loaded here)
+#   # and the scheduler port published on the core machine.
+#   dask-worker:
+#     profiles: ["dask"]
+#     image: prf-backend:staging
+#     container_name: prf-remote-dask-worker
+#     command: ["/opt/venv/bin/dask", "worker",
+#               "tcp://${CORE_IP:-192.168.0.210}:${DASK_SCHEDULER_PORT:-8786}",
+#               "--name", "${WORKER_NAME:-remote}-worker",
+#               "--nthreads", "2", "--memory-limit", "700MB",
+#               "--no-dashboard"]
+#     environment:
+#       - PYTHONPATH=/app
+#     restart: unless-stopped
+#     mem_limit: 768m
+# jinja-end

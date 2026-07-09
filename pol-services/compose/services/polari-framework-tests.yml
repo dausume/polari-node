@@ -1,0 +1,23 @@
+# jinja-start
+## SERVICE: polari-framework-tests — annotated source; envs: test.
+## Assembled by the bundle source per the manifest.
+## variation: env — polari-framework-tests: test
+# {% if env_name == 'test' %}
+# 
+#   # Backend framework tests
+#   polari-framework-tests:
+#     build:
+#       context: ./polari-framework
+#       dockerfile: Dockerfile.test
+#     container_name: polari-framework-tests
+#     networks:
+#       - {{ node_network }}
+#     healthcheck:
+#       test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+#       interval: 5s
+#       timeout: 3s
+#       retries: 10
+#     # Run backend tests first
+#     restart: "no"
+# {% endif %}
+# jinja-end
