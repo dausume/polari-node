@@ -259,6 +259,23 @@ class SystemInfoResource:
                 continue
         return 0
 
+    @staticmethod
+    def _process_mem():
+        """This worker process's resident/peak RSS (res-3 measured
+        RAM) — /proc/self/status VmRSS/VmHWM, stdlib."""
+        out = {}
+        try:
+            with open('/proc/self/status') as f:
+                for line in f:
+                    if line.startswith(('VmRSS', 'VmHWM')):
+                        key = 'residentMb' if line.startswith(
+                            'VmRSS') else 'peakMb'
+                        out[key] = round(
+                            int(line.split()[1]) / 1024.0, 1)
+        except (OSError, ValueError, IndexError):
+            pass
+        return out
+
     def on_get(self, req, resp):
         import os
         import platform
@@ -293,6 +310,7 @@ class SystemInfoResource:
                 'cgroupLimitBytes': self._cgroup_limit(),
             },
             'disk': disk,
+            'process': self._process_mem(),
         }}]
 
 

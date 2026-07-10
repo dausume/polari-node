@@ -289,6 +289,17 @@ class SystemInfoResource:
             disk = {'totalBytes': usage.total, 'freeBytes': usage.free}
         except OSError:
             disk = {'totalBytes': 0, 'freeBytes': 0}
+        process = {}
+        try:
+            with open('/proc/self/status') as f:
+                for line in f:
+                    if line.startswith(('VmRSS', 'VmHWM')):
+                        key = 'residentMb' if line.startswith(
+                            'VmRSS') else 'peakMb'
+                        process[key] = round(
+                            int(line.split()[1]) / 1024.0, 1)
+        except (OSError, ValueError, IndexError):
+            pass
         resp.media = [{'system-info': {
             'platform': {
                 'systemType': platform.system(),
@@ -312,6 +323,7 @@ class SystemInfoResource:
                 'cgroupLimitBytes': cg_limit,
             },
             'disk': disk,
+            'process': process,
         }}]
 
 
