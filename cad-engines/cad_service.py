@@ -240,7 +240,72 @@ class ExportResource:
             return {'ok': False, 'error': f'freecad export failed: {e}'}
 
 
+class SystemInfoResource:
+    """Host specs for the node this worker runs on (res-1 remote
+    inventory pull) — mirrors msci-engines' /system-info. stdlib-only,
+    same response shape as the backend's endpoint."""
+
+    def on_get(self, req, resp):
+        import os
+        import platform
+        import shutil
+        mem = {}
+        try:
+            with open('/proc/meminfo') as f:
+                for line in f:
+                    parts = line.split()
+                    if parts and parts[0].rstrip(':') in (
+                            'MemTotal', 'MemAvailable'):
+                        mem[parts[0].rstrip(':')] = int(parts[1]) * 1024
+        except (OSError, ValueError, IndexError):
+            pass
+        total = mem.get('MemTotal', 0)
+        avail = mem.get('MemAvailable', 0)
+        cg_limit = 0
+        for path in ('/sys/fs/cgroup/memory.max',
+                     '/sys/fs/cgroup/memory/memory.limit_in_bytes'):
+            try:
+                with open(path) as f:
+                    raw = f.read().strip()
+                if raw != 'max':
+                    limit = int(raw)
+                    cg_limit = 0 if limit >= (1 << 60) else limit
+                break
+            except (OSError, ValueError):
+                continue
+        try:
+            usage = shutil.disk_usage('/')
+            disk = {'totalBytes': usage.total, 'freeBytes': usage.free}
+        except OSError:
+            disk = {'totalBytes': 0, 'freeBytes': 0}
+        resp.media = [{'system-info': {
+            'platform': {
+                'systemType': platform.system(),
+                'networkName': os.environ.get(
+                    'HOSTNAME', platform.node()),
+                'arch': platform.machine(),
+                'isContainerized': True,
+                'service': 'cad-engines',
+            },
+            'cpu': {
+                'numLogicalCPUs': os.cpu_count() or 0,
+                'numPhysicalCPUs': 0,
+                'currentUsagePercent': 0,
+            },
+            'memory': {
+                'total': total,
+                'available': avail,
+                'percentUsed': round(
+                    (total - avail) * 100.0 / total, 1)
+                if total else 0,
+                'cgroupLimitBytes': cg_limit,
+            },
+            'disk': disk,
+        }}]
+
+
 app = falcon.App()
 app.add_route('/capability', CapabilityResource())
+app.add_route('/system-info', SystemInfoResource())
 app.add_route('/cad/import', ImportResource())
 app.add_route('/cad/export', ExportResource())

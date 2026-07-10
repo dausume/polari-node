@@ -195,8 +195,98 @@ class DarcyDrainsResource:
             resp.media = {'ok': False, 'error': f'darcy solve failed: {e}'}
 
 
+class SystemInfoResource:
+    """Host specs for the node this worker runs on (res-1 remote
+    inventory pull). stdlib-only — same response shape as the
+    backend's /system-info, minus what a slim worker can't know."""
+
+    @staticmethod
+    def _meminfo():
+        info = {}
+        try:
+            with open('/proc/meminfo') as f:
+                for line in f:
+                    parts = line.split()
+                    if parts and parts[0].rstrip(':') in (
+                            'MemTotal', 'MemAvailable'):
+                        info[parts[0].rstrip(':')] = int(parts[1]) * 1024
+        except (OSError, ValueError, IndexError):
+            pass
+        return info
+
+    @staticmethod
+    def _physical_cpus():
+        try:
+            cores = set()
+            with open('/proc/cpuinfo') as f:
+                phys = core = None
+                for line in f:
+                    if line.startswith('physical id'):
+                        phys = line.split(':')[1].strip()
+                    elif line.startswith('core id'):
+                        core = line.split(':')[1].strip()
+                    elif not line.strip() and phys is not None:
+                        cores.add((phys, core))
+                        phys = core = None
+            return len(cores)
+        except OSError:
+            return 0
+
+    @staticmethod
+    def _cgroup_limit():
+        for path in ('/sys/fs/cgroup/memory.max',
+                     '/sys/fs/cgroup/memory/memory.limit_in_bytes'):
+            try:
+                with open(path) as f:
+                    raw = f.read().strip()
+                if raw == 'max':
+                    return 0
+                limit = int(raw)
+                return 0 if limit >= (1 << 60) else limit
+            except (OSError, ValueError):
+                continue
+        return 0
+
+    def on_get(self, req, resp):
+        import os
+        import platform
+        mem = self._meminfo()
+        total = mem.get('MemTotal', 0)
+        avail = mem.get('MemAvailable', 0)
+        try:
+            usage = shutil.disk_usage('/')
+            disk = {'totalBytes': usage.total, 'freeBytes': usage.free}
+        except OSError:
+            disk = {'totalBytes': 0, 'freeBytes': 0}
+        resp.media = [{'system-info': {
+            'platform': {
+                'systemType': platform.system(),
+                'networkName': os.environ.get(
+                    'HOSTNAME', platform.node()),
+                'arch': platform.machine(),
+                'isContainerized': True,
+                'service': 'msci-engines',
+            },
+            'cpu': {
+                'numLogicalCPUs': os.cpu_count() or 0,
+                'numPhysicalCPUs': self._physical_cpus(),
+                'currentUsagePercent': 0,
+            },
+            'memory': {
+                'total': total,
+                'available': avail,
+                'percentUsed': round(
+                    (total - avail) * 100.0 / total, 1)
+                if total else 0,
+                'cgroupLimitBytes': self._cgroup_limit(),
+            },
+            'disk': disk,
+        }}]
+
+
 app = falcon.App()
 app.add_route('/capability', CapabilityResource())
+app.add_route('/system-info', SystemInfoResource())
 app.add_route('/dft/molecular-energy', MolecularEnergyResource())
 app.add_route('/fem/conduction', ConductionResource())
 app.add_route('/darcy/head-field', DarcyHeadFieldResource())
