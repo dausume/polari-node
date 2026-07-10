@@ -62,6 +62,17 @@ def _capability():
         'importFormats': importers, 'exportFormats': exporters,
         'note': 'trimesh is the always-on baseline; FreeCAD (WITH_FREECAD='
                 '1) adds FCStd + STEP.',
+        # res-2: declared resource footprint (labeled; res-3 measures).
+        # trimesh import/export is strictly single-threaded — this
+        # worker gains NOTHING from a big-compute node.
+        'resources': {
+            'minThreads': 1,
+            'threadCeiling': 1,
+            'cpuBenefit': 'none',
+            'ramMb': 300,    # trimesh resident baseline
+            'imageMb': 688,  # prf-cad-engines:staging on-disk size
+            'fidelity': 'declared',
+        },
     }
 
 

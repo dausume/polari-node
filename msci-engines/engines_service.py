@@ -32,6 +32,18 @@ def _capability():
     report['engines']['quantum-espresso'] = {
         'available': bool(shutil.which('pw.x')),
         'note': 'build with WITH_QE=1 to include'}
+    # res-2: declared resource footprint — the profile importer caches
+    # this into a ModuleResourceProfile(subject_kind='engine'). Numbers
+    # are DECLARED (labeled); res-3 measurement overrides them.
+    import os
+    report['resources'] = {
+        'minThreads': 1,
+        'threadCeiling': os.cpu_count() or 1,  # BLAS/FEM assembly scales
+        'cpuBenefit': 'sublinear',
+        'ramMb': 900,     # pyscf+sfepy resident baseline under load
+        'imageMb': 2160,  # prf-msci-engines:staging on-disk size
+        'fidelity': 'declared',
+    }
     return report
 
 
