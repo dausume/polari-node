@@ -124,6 +124,10 @@ services:
       - ./polari-platform-angular/tsconfig.spec.json:/app/tsconfig.spec.json:ro
       # Mount coverage output directory
       - ./polari-platform-angular/coverage:/app/coverage
+    # Hand the bind-mounted coverage/ back to the HOST user on exit so no
+    # root-owned files land on the host (see polari-platform-angular/
+    # docker-compose.test.yml for the full rationale).
+    command: sh -c 'trap "chown -R ${UID:-1000}:${GID:-1000} /app/coverage" EXIT; /app/run-tests.sh'
     restart: "no"
     depends_on:
       polari-framework-server:
