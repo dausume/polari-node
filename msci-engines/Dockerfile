@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir \
 
 COPY engines_service.py /srv/engines_service.py
 COPY darcy_solver.py /srv/darcy_solver.py
+COPY structure_service.py /srv/structure_service.py
 
 EXPOSE 9500
 CMD ["gunicorn", "--chdir", "/srv", "--bind", "0.0.0.0:9500", \

@@ -314,6 +314,10 @@ class SystemInfoResource:
         }}]
 
 
+from structure_service import (          # noqa: E402
+    StructureAnalyzeResource, StructureXrdResource,
+)
+
 app = falcon.App()
 app.add_route('/capability', CapabilityResource())
 app.add_route('/system-info', SystemInfoResource())
@@ -321,3 +325,5 @@ app.add_route('/dft/molecular-energy', MolecularEnergyResource())
 app.add_route('/fem/conduction', ConductionResource())
 app.add_route('/darcy/head-field', DarcyHeadFieldResource())
 app.add_route('/darcy/drains', DarcyDrainsResource())
+app.add_route('/structure/analyze', StructureAnalyzeResource())
+app.add_route('/structure/xrd', StructureXrdResource())
