@@ -265,19 +265,20 @@ services:
       interval: 10s
       timeout: 10s
       # Startup replays the DB persistence pass (thousands of saved sim-state
-      # instances) before SERVER READY, which can take well over a minute.
-      start_period: 240s
+      # instances) before SERVER READY; a cold first-boot DB seed is ~10-15 min
+      # (match the suite bundle — swarm KILLS tasks that outrun this grace).
+      start_period: 1800s
       retries: 5
     volumes:
       - backend-data:/app/data
     deploy:
       resources:
         limits:
-          memory: 384M
-          cpus: '0.4'
+          memory: 1024M
+          cpus: '2.0'
         reservations:
-          memory: 128M
-          cpus: '0.1'
+          memory: 256M
+          cpus: '0.5'
     depends_on:
       prf-file-store:
         condition: service_healthy
