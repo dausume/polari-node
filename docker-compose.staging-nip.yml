@@ -260,6 +260,17 @@ services:
       # Science-engine delegation (msci-engines worker on polari-link;
       # safe when the worker is down — capability degrades honestly)
       - MSCI_ENGINES_URL=http://${LOCAL_IP}:9500
+      # mlb-0: per-instance module set (comma list; empty = ALL modules,
+      # the monolithic default). Set at render time to focus an
+      # instance — e.g. the msci set:
+      #   POLARI_MODULES=materialsScience,pspp,techtree,simulations,polariapps
+      # Different machines get different sets via their own render env.
+      - POLARI_MODULES=${POLARI_MODULES:-}
+      # mlb-1: two-phase boot (core listens fast, modules admitted
+      # after listen, dependency-ordered). off = monolithic boot.
+      - POLARI_LAZY_BOOT=${POLARI_LAZY_BOOT:-off}
+      # mlb-5: [DB-Save] per-field stream (quiet|verbose).
+      - POLARI_DB_LOG=${POLARI_DB_LOG:-quiet}
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/', timeout=5)"]
       interval: 10s
