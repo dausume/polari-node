@@ -107,6 +107,17 @@ services:
       prf-mariadb:
         condition: service_healthy
     entrypoint: ["/opt/startup_shells/kc_entrypoint.sh"]
+    healthcheck:
+      # gm-4: swarm start-first (blue-green moves) only keeps the old
+      # server serving while the NEW one boots if "running" is gated
+      # on real readiness — a JVM takes minutes, an ungated container
+      # is "running" in seconds (measured as an outage). The image
+      # has no curl; /dev/tcp does the GET.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /realms/master HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q 200"]
+      interval: 15s
+      timeout: 10s
+      start_period: 300s
+      retries: 3
     deploy:
       resources:
         limits:
