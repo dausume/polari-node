@@ -272,12 +272,17 @@ services:
       # mlb-5: [DB-Save] per-field stream (quiet|verbose).
       - POLARI_DB_LOG=${POLARI_DB_LOG:-quiet}
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/', timeout=5)"]
+      # mlb-1: /api/health answers 200 at CORE-READY (lazy boot: ~1 min
+      # even on cold volumes; urlopen raises on the 503 served during
+      # the core pass, so 'starting' holds exactly until core data is
+      # up). Monolithic fallback (POLARI_LAZY_BOOT=off) serves 200 only
+      # after its full boot — the long grace below covers that path.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/api/health', timeout=5)"]
       interval: 10s
       timeout: 10s
-      # Startup replays the DB persistence pass (thousands of saved sim-state
-      # instances) before SERVER READY; a cold first-boot DB seed is ~10-15 min
-      # (match the suite bundle — swarm KILLS tasks that outrun this grace).
+      # Grace sized for the MONOLITHIC fallback (cold seed ~10-15 min;
+      # swarm KILLS tasks that outrun this). Lazy boots flip healthy at
+      # core-ready long before it matters.
       start_period: 1800s
       retries: 5
     volumes:
