@@ -177,6 +177,45 @@ else
     fi
 fi
 
+# 1b. polari-shell - restore the fixed shell redirect URIs --------------------
+# The app-shell client's URIs are host-INDEPENDENT (custom scheme +
+# one fixed loopback port — Keycloak has no port wildcards), so this
+# pass just re-asserts them in case an admin edit drifted them.
+POLARI_SHELL_CLIENT_ID="polari-shell"
+PSH_RESPONSE=$(curl -s -X GET \
+    "$KEYCLOAK_URL/admin/realms/$POLARI_REALM/clients?clientId=$POLARI_SHELL_CLIENT_ID" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" \
+    -H "Content-Type: application/json")
+PSH_UUID=$(echo "$PSH_RESPONSE" | jq -r '.[0].id')
+
+if [ "$PSH_UUID" = "null" ] || [ -z "$PSH_UUID" ]; then
+    echo "WARNING: '$POLARI_SHELL_CLIENT_ID' not found. Skipping (re-import the Polari realm to create it)."
+else
+    PSH_CURRENT=$(curl -s -X GET \
+        "$KEYCLOAK_URL/admin/realms/$POLARI_REALM/clients/$PSH_UUID" \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json")
+    PSH_PAYLOAD=$(echo "$PSH_CURRENT" | jq '
+        .redirectUris = ["polari://oauth/callback", "http://127.0.0.1:41300/callback"] |
+        .webOrigins = ["+"] |
+        .publicClient = true |
+        .directAccessGrantsEnabled = false |
+        .attributes["pkce.code.challenge.method"] = "S256"
+    ')
+    PSH_UPDATE=$(curl -s -w "\n%{http_code}" -X PUT \
+        "$KEYCLOAK_URL/admin/realms/$POLARI_REALM/clients/$PSH_UUID" \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$PSH_PAYLOAD")
+    PSH_HTTP=$(echo "$PSH_UPDATE" | tail -n1)
+    if [ "$PSH_HTTP" = "204" ] || [ "$PSH_HTTP" = "200" ]; then
+        echo "SUCCESS: polari-shell redirect URIs asserted."
+    else
+        echo "ERROR: polari-shell update failed. HTTP $PSH_HTTP"
+        echo "$PSH_UPDATE" | sed '$d'
+    fi
+fi
+
 # 2. polari-backend - set client secret + service-account roles --------------
 PBE_RESPONSE=$(curl -s -X GET \
     "$KEYCLOAK_URL/admin/realms/$POLARI_REALM/clients?clientId=$POLARI_BE_CLIENT_ID" \
