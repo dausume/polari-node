@@ -255,6 +255,9 @@ services:
     environment:
       - DEPLOY_ENV=staging
       - IN_DOCKER_CONTAINER=true
+      # appstore-1: the instance's own name — identity payloads and
+      # shell registrations carry it; without it they say 'local'.
+      - POLARI_INSTANCE_NAME=${POLARI_INSTANCE_NAME:-prf-a}
       # API profiler self-call rewriting (avoids hairpin NAT)
       - INTERNAL_API_URL=http://localhost:3000
       # Database — SQLite enabled
