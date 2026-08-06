@@ -298,6 +298,11 @@ services:
       retries: 5
     volumes:
       - backend-data:/app/data
+      # appstore-1: the suite root CA travels INSIDE shell
+      # registration payloads (tls.caPem + fingerprint pin) so
+      # installed apps can trust staging without OS-store surgery.
+      # POLARI_SHELL_CA_PATH overrides; absence stays honest.
+      - ./ca/root_ca.crt:/app/certs/root_ca.crt:ro
     deploy:
       resources:
         limits:
