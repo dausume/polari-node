@@ -175,6 +175,18 @@ sudo docker system prune -af --volumes</pre></li>
         ssl_certificate /etc/nginx/certs/prf-proxy.crt;
         ssl_certificate_key /etc/nginx/certs/prf-proxy.key;
 
+        # The root CA, downloadable. Everything here is served under a
+        # self-signed chain, so a device that does not already trust this
+        # CA cannot reach the SPA or complete a Keycloak login at all —
+        # and the SPA's own catch-all would otherwise answer /root-ca.crt
+        # with index.html, which installs as nothing. An exact-match
+        # location wins over that catch-all regardless of order.
+        location = /root-ca.crt {
+            alias /etc/nginx/certs/ca/prf-ca.crt;
+            default_type application/x-x509-ca-cert;
+            add_header Content-Disposition 'attachment; filename="polari-root-ca.crt"';
+        }
+
         location / {
             proxy_pass http://prf-frontend;
             proxy_set_header Host $host;
