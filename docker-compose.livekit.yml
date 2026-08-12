@@ -1,0 +1,49 @@
+# ==============================================================================
+# docker-compose.livekit.yml — pol-livekit, the self-hosted media server (mtg-1)
+# ==============================================================================
+# LiveKit for Polari collaboration sessions (LIVEKIT_COLLABORATION_PLAN.md v2).
+# Apache-2.0 upstream (API + LICENSE + source headers checked 2026-08-12 —
+# GPLv3-compatible). Never part of the default `up`; a deliberate placement on
+# a host with the bandwidth (family-sized 4-8 participants for v1, LAN-only).
+#
+#   pol compose livekit up        (generates livekit/keys.env on first run)
+#
+# The port shape is the mtg-0 finding, proven live 2026-08-12:
+#   - MEDIA is UDP and CANNOT ride an HTTP proxy: the 50000-50049/udp range is
+#     published directly (the suite's first /udp publish). Range chosen by
+#     islemesh_netledger.free_udp_range() against this host's live listeners
+#     (swarm overlay holds 4789/7946/udp) — re-run it before moving hosts.
+#   - SIGNALLING (ws/http on 7880) terminates TLS at prf-proxy under
+#     livekit.prf.<LOCAL_IP>.nip.io; the host-published 7880 is what the proxy
+#     targets (the proxy's overlay cannot resolve this compose network's names).
+#     Direct ws://host:7880 works but is plaintext — LAN debugging only.
+#   - LIVEKIT_NODE_IP must be the HOST LAN IP or ICE candidates advertise the
+#     container address and nothing off-host connects (mtg-0 gotcha). The pol
+#     case fills it from `hostname -I` unless overridden.
+#
+# Secrets: LIVEKIT_KEYS lives in livekit/keys.env — GENERATED, gitignored
+# (all repos are public). Rotate by deleting the file and re-running up
+# (existing tokens die with the old secret; that is the point of rotating).
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  pol-livekit:
+    image: livekit/livekit-server:v1.9.12
+    container_name: pol-livekit
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml --node-ip ${LIVEKIT_NODE_IP:?host LAN IP — use pol compose livekit up, or export LIVEKIT_NODE_IP}
+    env_file:
+      - ./livekit/keys.env
+    volumes:
+      - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
+    networks:
+      - polari-link
+    ports:
+      - "7880:7880"                      # signalling ws/http (TLS at prf-proxy)
+      - "7881:7881"                      # ICE over TCP fallback
+      - "50000-50049:50000-50049/udp"    # media — direct, bypasses nginx
+    mem_limit: 1g
