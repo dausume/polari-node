@@ -274,6 +274,16 @@ services:
       # Science-engine delegation (msci-engines worker on polari-link;
       # safe when the worker is down — capability degrades honestly)
       - MSCI_ENGINES_URL=http://${LOCAL_IP}:9500
+      # mtg-2: the meeting media server (pol-livekit, `pol compose
+      # livekit up`). LIVEKIT_KEYS must MATCH that service's generated
+      # livekit/keys.env or every minted token is garbage; the file is
+      # gitignored, so this reads it through the env at deploy time.
+      # LIVEKIT_CLIENT_URL is what BROWSERS dial (TLS at prf-proxy) —
+      # never derived, because a name a device must trust is posture.
+      # All three absent = the capability refuses honestly.
+      - LIVEKIT_URL=${LIVEKIT_URL:-http://${LOCAL_IP}:7880}
+      - LIVEKIT_KEYS=${LIVEKIT_KEYS:-}
+      - LIVEKIT_CLIENT_URL=${LIVEKIT_CLIENT_URL:-wss://livekit.prf.${LOCAL_IP}.nip.io}
       # mlb-0: per-instance module set (comma list; empty = ALL modules,
       # the monolithic default). Set at render time to focus an
       # instance — e.g. the msci set:
