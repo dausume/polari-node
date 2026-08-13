@@ -1,0 +1,23 @@
+# pol-reticulum RNS config (ret-2). Copied into /var/reticulum/config on
+# first start ONLY — edit the live copy in the volume (or wipe the volume
+# to re-seed from this template). No secrets: identities are generated
+# into the volume at runtime, never committed (all repos are public).
+#
+# The ret-0-proven shape: a TCP server interface on the LAN. Radios
+# (RNode/LoRa) are added per deployment against real DeviceLink rows —
+# never seeded hopefully (§5j: udev facts, not guesses).
+
+[reticulum]
+  enable_transport = True
+  share_instance = No
+  panic_on_interface_error = No
+
+[logging]
+  loglevel = 3
+
+[interfaces]
+  [[TCP Server]]
+    type = TCPServerInterface
+    enabled = True
+    listen_ip = 0.0.0.0
+    listen_port = 4242

@@ -1,0 +1,54 @@
+# ==============================================================================
+# docker-compose.reticulum.yml — pol-reticulum, the mesh sidecar (ret-2)
+# ==============================================================================
+# Reticulum transport for Polari (RETICULUM_TRANSPORT_PLAN.md). The FIFTH walk
+# of the optional-worker pattern (msci → cad → recon → livekit → here); never
+# part of the default `up`.
+#
+#   pol compose reticulum up
+#
+# ⚠ LICENCE (RETICULUM_LICENCE_GATE.md, 2026-08-13): the image pins
+# rns==0.9.4 + lxmf==0.6.3 — the last MIT releases; later versions are
+# GPLv3-INCOMPATIBLE (field-of-use restrictions added 2025-04-15). RNS is
+# imported ONLY inside this container: the process boundary is the licence
+# boundary. Pins are licence pins — bumping them means re-running the gate.
+#
+# Ports:
+#   - 4242  Reticulum TCPServerInterface (the ret-0-proven LAN bearer; other
+#           isles' TCPClientInterface dials this)
+#   - 4285  the sidecar's /status API (what the backend's rns_remote ladder
+#           probes; RETICULUM_URL=http://<host>:4285)
+#
+# State: identity + RNS storage live in the NAMED VOLUME pol-reticulum-data —
+# deliberately not a bind mount (nothing root-owned ever lands on the host;
+# the standing root-artifact rule). Wipe the volume to re-key deliberately.
+# No secrets in the repo: identities are generated at runtime (public repos).
+#
+# Radios: a LoRa/RNode board is passed through per deployment
+# (devices: /dev/serial/by-id/...) against a real DeviceLink row — the shell
+# capability (ret-2c/§5l) asks a privileged helper; nothing here holds the
+# docker socket. No radio is declared by default (§5j: udev facts, never
+# hopeful defaults).
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+volumes:
+  pol-reticulum-data:
+
+services:
+  pol-reticulum:
+    build: ./reticulum
+    image: pol-reticulum:staging
+    container_name: pol-reticulum
+    restart: unless-stopped
+    volumes:
+      - pol-reticulum-data:/var/reticulum
+    networks:
+      - polari-link
+    ports:
+      - "4242:4242"       # Reticulum TCP bearer (isle-to-isle over LAN/WAN)
+      - "4285:4285"       # /status — the rns_remote ladder's probe target
+    mem_limit: 512m
