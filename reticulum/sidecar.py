@@ -20,6 +20,17 @@ Deliberately thin:
      ⚠ v1 returns are SELF-LABELLED (identity hash inside the
      envelope, not link-authenticated) — stated, and the
      link-authenticated return path is the named follow-up.
+     STATE DELTAS (§5f semantics, first walk of the inter-arch
+     efficiency story): a POST that isn't a forced keyframe
+     broadcasts only the CHANGES vs the prior payload
+     (kind 'delta', parentVersion carried); KEYFRAMES ARE
+     MANDATORY — every Nth broadcast (keyframe_every_n, default 5)
+     or any keyframe:true POST sends the FULL state, because on a
+     one-way path a keyframe is the ONLY recovery a late joiner or
+     a gap has. Byte counts per kind are MEASURED and exposed in
+     the facts (deltaBytes vs keyframeBytes — the saving is a
+     number, not a claim). Deltas are JSON in v1; gRPC/protobuf
+     bodies are ret-5's turn.
 
 Nothing in this process writes Polari rows — inbound data goes to
 the backend's /api/reticulum/inbound seam where it becomes a
@@ -103,6 +114,12 @@ RNS.Transport.register_announce_handler(AnnounceListener())
 LIGHTHOUSES = {}
 _LH_LOCK = threading.Lock()
 
+#: RNS packets cap at ~500 B; keyframes MUST fit in one (they are the
+#: recovery mechanism — a state whose recovery cannot be broadcast is
+#: not broadcastable). Envelope budget leaves headroom for framing.
+#: Larger state is ret-7's road (LXMF/Resource fragmentation).
+KEYFRAME_BYTE_BUDGET = 450
+
 
 class Lighthouse:
     """One relay: broadcasts posted state as PLAIN packets on aspects
@@ -111,10 +128,17 @@ class Lighthouse:
 
     def __init__(self, name):
         self.name = name
-        self.state = None          # {'payload','version','keyframe'}
+        self.state = None          # {'payload','version'} — CURRENT
+        self.pending_delta = None  # {'delta','version','parentVersion'}
+        self.force_keyframe = True  # first broadcast is always full
+        self.keyframe_every_n = 5
         self.cadence_s = 60.0
         self.last_broadcast_ms = 0
         self.broadcasts = 0
+        self.keyframes_sent = 0
+        self.deltas_sent = 0
+        self.keyframe_bytes = 0
+        self.delta_bytes = 0
         self.consumers = {}        # identityHash -> return facts
         self.out_dest = RNS.Destination(
             None, RNS.Destination.OUT, RNS.Destination.PLAIN,
@@ -147,32 +171,106 @@ class Lighthouse:
         entry['lastReturnMs'] = now_ms
         entry['lastVersion'] = body.get('receivedVersion')
 
+    def keyframe_size(self, payload, version):
+        """What the keyframe envelope for this payload would weigh —
+        checked BEFORE adoption, because a keyframe that cannot fly
+        makes the whole relay unrecoverable."""
+        return len(json.dumps({'kind': 'state', 'relay': self.name,
+                               'version': version, 'keyframe': True,
+                               'tsMs': 0, 'payload': payload}
+                              ).encode('utf-8'))
+
+    def post_state(self, payload, version, keyframe=False):
+        """Adopt new state; decide what the next broadcasts carry.
+        Deltas only between dict payloads with a prior to diff
+        against — anything else forces a keyframe (you cannot delta
+        what you cannot diff). Returns 'keyframe' or 'delta'."""
+        prior = self.state
+        deltable = (not keyframe and prior is not None
+                    and isinstance(prior.get('payload'), dict)
+                    and isinstance(payload, dict))
+        if deltable:
+            changed = {k: v for k, v in payload.items()
+                       if prior['payload'].get(k, object()) != v}
+            removed = sorted(k for k in prior['payload']
+                             if k not in payload)
+            self.pending_delta = {
+                'delta': {'changed': changed, 'removed': removed},
+                'version': version,
+                'parentVersion': prior['version'],
+            }
+            mode = 'delta'
+        else:
+            self.pending_delta = None
+            self.force_keyframe = True
+            mode = 'keyframe'
+        self.state = {'payload': payload, 'version': version}
+        return mode
+
+    def _envelope(self):
+        """What THIS broadcast carries: a mandatory keyframe (forced,
+        every-Nth, or nothing to delta) or the pending delta."""
+        nth_due = self.keyframe_every_n and \
+            self.broadcasts % self.keyframe_every_n == 0
+        if self.force_keyframe or nth_due or self.pending_delta is None:
+            kind = 'keyframe'
+            body = {'kind': 'state', 'relay': self.name,
+                    'version': self.state['version'],
+                    'keyframe': True,
+                    'tsMs': int(time.time() * 1000),
+                    'payload': self.state['payload']}
+        else:
+            kind = 'delta'
+            body = {'kind': 'delta', 'relay': self.name,
+                    'version': self.pending_delta['version'],
+                    'parentVersion':
+                        self.pending_delta['parentVersion'],
+                    'tsMs': int(time.time() * 1000),
+                    'delta': self.pending_delta['delta']}
+        return kind, json.dumps(body).encode('utf-8')
+
     def _loop(self):
         while not self._stop.is_set():
-            state = self.state
-            if state is not None:
-                envelope = json.dumps({
-                    'kind': 'state', 'relay': self.name,
-                    'version': state['version'],
-                    'keyframe': bool(state.get('keyframe', True)),
-                    'tsMs': int(time.time() * 1000),
-                    'payload': state['payload'],
-                }).encode('utf-8')
+            if self.state is not None:
+                kind, envelope = self._envelope()
                 try:
                     RNS.Packet(self.out_dest, envelope).send()
                     self.broadcasts += 1
                     self.last_broadcast_ms = int(time.time() * 1000)
+                    if kind == 'keyframe':
+                        self.keyframes_sent += 1
+                        self.keyframe_bytes += len(envelope)
+                        self.force_keyframe = False
+                    else:
+                        self.deltas_sent += 1
+                        self.delta_bytes += len(envelope)
                 except Exception as e:
                     print(f'[lighthouse:{self.name}] send failed: {e}',
                           flush=True)
             self._stop.wait(self.cadence_s)
 
     def facts(self):
+        avg_kf = (self.keyframe_bytes / self.keyframes_sent) \
+            if self.keyframes_sent else None
+        avg_delta = (self.delta_bytes / self.deltas_sent) \
+            if self.deltas_sent else None
         return {
             'name': self.name,
             'version': self.state['version'] if self.state else None,
             'cadenceSeconds': self.cadence_s,
+            'keyframeEveryN': self.keyframe_every_n,
             'broadcasts': self.broadcasts,
+            'keyframesSent': self.keyframes_sent,
+            'deltasSent': self.deltas_sent,
+            'keyframeBytes': self.keyframe_bytes,
+            'deltaBytes': self.delta_bytes,
+            'avgKeyframeBytes': round(avg_kf, 1) if avg_kf else None,
+            'avgDeltaBytes': round(avg_delta, 1) if avg_delta
+            else None,
+            'deltaNote': 'byte counts are MEASURED from envelopes '
+                         'actually sent; keyframes are mandatory '
+                         '(every Nth or forced) — the only recovery '
+                         'on a one-way path',
             'lastBroadcastMs': self.last_broadcast_ms,
             'consumers': self.consumers,
             'consumerCount': len(self.consumers),
@@ -258,14 +356,39 @@ class StatusHandler(BaseHTTPRequestHandler):
                             'payload + version'})
                     if lh is None:
                         lh = LIGHTHOUSES[name] = Lighthouse(name)
-                    lh.state = {'payload': body['payload'],
-                                'version': body['version'],
-                                'keyframe': body.get('keyframe', True)}
+                    kf_bytes = lh.keyframe_size(body['payload'],
+                                                body['version'])
+                    if kf_bytes > KEYFRAME_BYTE_BUDGET:
+                        if not LIGHTHOUSES[name].broadcasts \
+                                and LIGHTHOUSES[name].state is None:
+                            lh.stop()
+                            del LIGHTHOUSES[name]
+                        return self._json(413, {
+                            'ok': False,
+                            'error': 'keyframe envelope would be %d B '
+                                     'against a %d B budget (RNS '
+                                     'packet MTU ~500 B) — a state '
+                                     'whose RECOVERY cannot be '
+                                     'broadcast is not broadcastable. '
+                                     'Shrink the payload, or wait for '
+                                     'ret-7 (LXMF/Resource '
+                                     'fragmentation) for larger state.'
+                                     % (kf_bytes,
+                                        KEYFRAME_BYTE_BUDGET),
+                            'keyframeBytes': kf_bytes,
+                            'budgetBytes': KEYFRAME_BYTE_BUDGET})
+                    if 'keyframeEveryN' in body:
+                        lh.keyframe_every_n = int(body['keyframeEveryN'])
+                    mode = lh.post_state(body['payload'],
+                                         body['version'],
+                                         bool(body.get('keyframe',
+                                                       False)))
                     if 'cadenceSeconds' in body:
                         lh.cadence_s = float(body['cadenceSeconds'])
                     return self._json(200, {'ok': True,
                                             'lighthouse': name,
-                                            'version': body['version']})
+                                            'version': body['version'],
+                                            'mode': mode})
                 if lh is None:
                     return self._json(404, {'ok': False,
                                             'error': 'no lighthouse '
