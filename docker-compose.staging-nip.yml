@@ -274,6 +274,11 @@ services:
       # Science-engine delegation (msci-engines worker on polari-link;
       # safe when the worker is down — capability degrades honestly)
       - MSCI_ENGINES_URL=http://${LOCAL_IP}:9500
+      # dist-1: the microchip (cntfet) engines worker (:9700). UNSET =
+      # the ladder (topology provider cntfet.engines, else local
+      # ~/tools binaries); SET = that worker always (unreachable =
+      # refusal, never a silent local fallback).
+      - CNTFET_ENGINES_URL=${CNTFET_ENGINES_URL:-}
       # mtg-2: the meeting media server (pol-livekit, `pol compose
       # livekit up`). LIVEKIT_KEYS must MATCH that service's generated
       # livekit/keys.env or every minted token is garbage; the file is

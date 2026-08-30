@@ -1,0 +1,50 @@
+# ==============================================================================
+# docker-compose.cnt-engines.yml — the microchip (cntfet) engines worker
+# ==============================================================================
+# ngspice-46 + OpenVAF + OpenSTA + kwant behind one JSON API (:9700), so the
+# cntfet module's compute (OSDI equivalence, cell characterization, D11
+# cross-checks, F3 NEGF) runs on a swarm WORKER while the core keeps the
+# rows. Mirrors msci-engines. The backend delegates through
+# modules/cntfet/cnt_remote.py — ladder: CNTFET_ENGINES_URL knob wins;
+# else the topology's provider (ModuleAssignment cntfet.engines@<instance>);
+# else local ~/tools binaries; else an honest refusal.
+#
+#   ./cnt-engines/fetch-vendor.sh              # stage ngspice tarball + openvaf
+#   docker compose -p cnt-engines -f docker-compose.cnt-engines.yml up -d --build
+#
+# Swarm (no registry): build here, ship the image, deploy the role —
+#   docker save prf-cnt-engines:staging | ssh isle-core docker load
+#   pol swarm deploy cnt-engines           # pinned to isle-core below
+# The routing mesh publishes :9700 on every node, so the backend reaches it
+# at http://${LOCAL_IP}:9700 wherever the task landed.
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  cnt-engines:
+    build:
+      context: .
+      dockerfile: cnt-engines/Dockerfile
+    image: prf-cnt-engines:staging
+    container_name: prf-cnt-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9700:9700"
+    environment:
+      - CNT_ENGINES_WORKERS=${CNT_ENGINES_WORKERS:-3}
+    mem_limit: 2500m
+    deploy:
+      placement:
+        constraints:
+          # isle-core = the hardware-integration core (nodes.yml mandate);
+          # 6 cores for the kwant SCF chains. `pol allocate cnt-engines
+          # <machine>` rewrites this via POL_STACK_CONSTRAINTS.
+          - node.labels.polari.machine == isle-core
+      resources:
+        limits:
+          memory: 2500M

@@ -74,6 +74,7 @@ check docker-compose.dask.yml
 # compare handwritten(twin-b + dbcombo) vs handwritten(twin-b) + generated.
 check docker-compose.twin-b.yml docker-compose.dbcombo.yml
 check docker-compose.msci-engines.yml
+check docker-compose.cnt-engines.yml
 check docker-compose.remote-worker.yml --profile dask
 
 exit $fail

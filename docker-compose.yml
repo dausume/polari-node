@@ -174,6 +174,11 @@ services:
       # WebSocket settings
       - WEBSOCKET_URL=${BACKEND_URL:-localhost}
       - WEBSOCKET_PORT=${WEBSOCKET_PORT:-3001}
+      # Single dev server by default (HTTPS when certs exist). Dual = 2× ng serve ≈ 6 GB.
+      - FRONTEND_DUAL_SERVE=${FRONTEND_DUAL_SERVE:-false}
+    # Hard ceiling — one ng serve compiler sits ~3 GB; without this the host
+    # (15 GB) hit systemd-oomd pressure kills during image builds.
+    mem_limit: ${FRONTEND_MEM_LIMIT:-3500m}
     ports:
       # HTTP port (4201 to avoid conflict with PSC on 4200)
       - "${FRONTEND_HTTP_PORT:-4201}:4200"
