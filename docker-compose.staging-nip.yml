@@ -324,7 +324,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1024M
+          # 2026-09-02: was 1024M — the backend task was OOM-killed at its
+          # cgroup cap (anon RSS ~1.0 GB) during a page-backfill sweep;
+          # steady state after boot is ~660-700 MB with 40 modules loaded.
+          memory: 1536M
           cpus: '2.0'
         reservations:
           memory: 256M
