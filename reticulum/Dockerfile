@@ -13,6 +13,7 @@ FROM python:3.12-slim
 RUN pip install --no-cache-dir rns==0.9.4 lxmf==0.6.3
 
 COPY sidecar.py /opt/sidecar.py
+COPY lxmf_messaging.py /opt/lxmf_messaging.py
 COPY config.template /opt/config.template
 
 # Identity + RNS storage live in a named volume (no host bind mount —

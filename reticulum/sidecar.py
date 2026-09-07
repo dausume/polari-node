@@ -77,6 +77,16 @@ else:
 print(f'[sidecar] up; identity '
       f'{RNS.hexrep(identity.hash, delimit=False)}', flush=True)
 
+# ---- ret-7: LXMF store-and-forward messaging -------------------------
+import LXMF  # noqa: E402  (licence-pinned lxmf==0.6.3, gate doc)
+from lxmf_messaging import LxmfMessaging  # noqa: E402
+
+MESSAGING = LxmfMessaging(identity,
+                          os.path.join(CONFIG_DIR, 'lxmf'),
+                          rns_module=RNS, lxmf_module=LXMF)
+_msg_start = MESSAGING.start()
+print(f'[sidecar] lxmf messaging: {_msg_start}', flush=True)
+
 # ---- ret-1d: hear announces; hearing is not admitting ----------------
 PEERS = {}
 _PEERS_LOCK = threading.Lock()
@@ -319,6 +329,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 'interfaces': interface_facts(),
                 'peersHeard': peers,
                 'lighthouses': sorted(LIGHTHOUSES),
+                'lxmf': MESSAGING.facts(),
                 'uptimeSeconds': int(time.time() - STARTED),
             })
         if path.startswith('/lighthouse/'):
@@ -332,9 +343,19 @@ class StatusHandler(BaseHTTPRequestHandler):
                              'state = no broadcast = a dark radio, '
                              'DECIDED row 19)' % name})
             return self._json(200, dict(lh.facts(), ok=True))
+        if path == '/lxmf':
+            return self._json(200, dict(MESSAGING.facts(), ok=True))
+        if path == '/lxmf/messages':
+            return self._json(200, {
+                'ok': True,
+                'messages': MESSAGING.list_messages()})
+        if path == '/lxmf/refusals':
+            return self._json(200, {
+                'ok': True,
+                'refusals': MESSAGING.list_refusals()})
         return self._json(404, {'ok': False, 'error':
-                                'only /status and /lighthouse/* '
-                                'live here'})
+                                'only /status, /lighthouse/* and '
+                                '/lxmf* live here'})
 
     def do_POST(self):
         path = self.path.rstrip('/')
@@ -409,8 +430,28 @@ class StatusHandler(BaseHTTPRequestHandler):
                         'ok': True, 'stopped': name,
                         'note': 'the radio goes dark for this relay '
                                 '(row 19)'})
+        if path == '/lxmf/send':
+            if not body.get('destinationHash') \
+                    or 'content' not in body:
+                return self._json(400, {
+                    'ok': False, 'error': 'send needs '
+                    'destinationHash + content'})
+            report = MESSAGING.send(body['destinationHash'],
+                                    body['content'],
+                                    body.get('title', ''))
+            code = 200 if report.get('ok') else (
+                409 if 'refusal' in report else 400)
+            return self._json(code, report)
+        if path == '/lxmf/policy':
+            return self._json(200, {
+                'ok': True,
+                'policy': MESSAGING.set_policy(
+                    whitelist=body.get('whitelist'),
+                    max_per_window=body.get('maxPerWindow'),
+                    window_s=body.get('windowSeconds'))})
         return self._json(404, {'ok': False,
-                                'error': 'unknown lighthouse verb'})
+                                'error': 'unknown verb (lighthouse/* '
+                                         'or lxmf/*)'})
 
     def log_message(self, fmt, *args):  # quiet: status polls are noise
         pass

@@ -16,6 +16,17 @@
   loglevel = 3
 
 [interfaces]
+  # ret-7: zero-config wifi/LAN peering — AutoInterface discovers
+  # peers on the local segment (link-local multicast), so two
+  # sidecars on the same wifi network find each other with no
+  # manual TCP client config. IP networking only — no radio, no
+  # TX-legality concerns. NOTE: this template seeds the config on
+  # FIRST start only; an existing volume keeps its live copy (add
+  # the block there by hand, or wipe the volume to re-seed).
+  [[Auto Discovery]]
+    type = AutoInterface
+    enabled = True
+
   [[TCP Server]]
     type = TCPServerInterface
     enabled = True
