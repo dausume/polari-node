@@ -81,9 +81,19 @@ else
 fi
 
 # ---- reload nginx (only if something could have changed) ----
+log_step "Stage the edge cert for the prod proxy (if issued)"
+if [[ "$did_something" == "true" && -d "$CERTBOT_CONFIG_DIR/live/${LE_CERT_NAME:-pol-proxy-public}" ]]; then
+    run bash "$CA_DIR/stage-edge-cert.sh" "$CERTBOT_CONFIG_DIR/live/${LE_CERT_NAME:-pol-proxy-public}"
+fi
+
 log_step "Reload nginx"
+# the prod proxy is a container: reload it there when it is running
+if [[ "$NGINX_RELOAD_CMD" == "nginx -s reload" ]] && command -v docker >/dev/null 2>&1 \
+        && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx pol-proxy; then
+    NGINX_RELOAD_CMD="docker exec pol-proxy nginx -s reload"
+fi
 if [[ "$did_something" == "true" ]]; then
-    if command -v nginx >/dev/null 2>&1 || [[ "$DRY_RUN" == "true" ]]; then
+    if command -v nginx >/dev/null 2>&1 || [[ "$DRY_RUN" == "true" ]] || [[ "$NGINX_RELOAD_CMD" == docker* ]]; then
         # shellcheck disable=SC2086  # NGINX_RELOAD_CMD is intentionally split
         run $NGINX_RELOAD_CMD
     else

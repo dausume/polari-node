@@ -97,6 +97,30 @@ if cert_is_valid "$LIVE_CERT"; then
 fi
 
 # ---- write the DO credentials ini (certbot-dns-digitalocean expects this) ----
+# ---- challenge: dns (DigitalOcean DNS-01, default) or http (HTTP-01 webroot) ----
+# LE_CHALLENGE=http needs no DNS-provider API: the prod proxy serves
+# /.well-known/acme-challenge/ from .generated/certbot-www on :80, so any
+# registrar works. DNS-01 stays the default (it also allows internal-only names).
+LE_CHALLENGE="${LE_CHALLENGE:-dns}"
+LE_WEBROOT="${LE_WEBROOT:-$CA_DIR/../../.generated/certbot-www}"
+if [[ "$LE_CHALLENGE" == "http" ]]; then
+    log_step "HTTP-01 webroot ($LE_WEBROOT) — the proxy must be up on :80"
+    mkdir -p "$LE_WEBROOT"
+    run certbot certonly \
+        --webroot -w "$LE_WEBROOT" \
+        --cert-name "$LE_CERT_NAME" \
+        --config-dir "$CERTBOT_CONFIG_DIR" \
+        --work-dir "$CERTBOT_CONFIG_DIR/work" \
+        --logs-dir "$CERTBOT_CONFIG_DIR/logs" \
+        -m "$LE_EMAIL" \
+        --non-interactive --agree-tos \
+        $CERTBOT_D_ARGS
+    reclaim_sudo_ownership "$CERTBOT_CONFIG_DIR" "$LE_ENV_FILE"
+    bash "$CA_DIR/stage-edge-cert.sh" "$CERTBOT_CONFIG_DIR/live/$LE_CERT_NAME" || true
+    log_ok "Edge cert issued (HTTP-01) -> $CERTBOT_CONFIG_DIR/live/$LE_CERT_NAME/fullchain.pem"
+    exit 0
+fi
+
 log_step "DigitalOcean credentials file"
 if [[ "$DRY_RUN" == "true" ]]; then
     echo "  ${C_YELLOW}DRY-RUN${C_RESET} would write $DO_CREDS_FILE (chmod 600) with dns_digitalocean_token=***"
@@ -132,5 +156,6 @@ if [[ "$DRY_RUN" == "true" ]]; then
     log_ok "DRY-RUN complete — reviewed the exact certbot command above."
 else
     log_ok "Edge cert issued -> $LIVE_CERT"
-    log "Mount this into pol-proxy and reload nginx (renewals via ca/renew.sh)."
+    # stage into .generated/certs/edge (what docker-compose.prod.yml mounts) and reload the proxy if it runs
+    bash "$CA_DIR/stage-edge-cert.sh" "$CERTBOT_CONFIG_DIR/live/$LE_CERT_NAME" || true
 fi
