@@ -52,16 +52,31 @@ log_header "Let's Encrypt edge cert ($LE_CERT_NAME)"
 
 # ---- resolve the manifest row first (so we know the domain set early) ----
 log_step "Resolve manifest row '$LE_CERT_NAME'"
-SANS="$(manifest_sans "$LE_CERT_NAME" || true)"
+# LE_SANS (comma-separated) overrides the manifest row: pol prod computes the names from the ENABLED components
+SANS="${LE_SANS:-$(manifest_sans "$LE_CERT_NAME" || true)}"
+[[ -n "$LE_SANS" ]] && log_warn "SANs from LE_SANS (the enabled components), not from the manifest row: $LE_SANS"
 [[ -n "$SANS" ]] || die "No letsencrypt row named '$LE_CERT_NAME' in $MANIFEST_FILE." \
     "Add a row:  $LE_CERT_NAME | letsencrypt | host1, host2, ..." \
     "Or set LE_CERT_NAME to an existing letsencrypt row."
 
 # Verify it is actually a letsencrypt-issuer row.
 ROW_ISSUER="$(manifest_rows letsencrypt | awk -F'\t' -v n="$LE_CERT_NAME" '$1==n{print $2}')"
-[[ "$ROW_ISSUER" == "letsencrypt" ]] || die \
+# 'edge' rows resolve to letsencrypt on a public edge (cert-manifest.conf); an LE_SANS override needs no row at all
+[[ "$ROW_ISSUER" == "letsencrypt" || "$ROW_ISSUER" == "edge" || -n "${LE_SANS:-}" ]] || die \
     "Manifest row '$LE_CERT_NAME' is not issuer=letsencrypt." \
     "The edge cert must be a letsencrypt row in $MANIFEST_FILE."
+
+# Refuse malformed SANs BEFORE ever calling certbot — e.g. a templated host
+# whose ${VAR} resolved empty ('www.'), or a leftover '${...}'. Let's Encrypt
+# is rate-limited; better to fail loudly here than waste a real attempt on
+# garbage domains. Mirrors issue-internal-certs.sh's identical guard.
+while IFS= read -r _san; do
+    if [[ "$_san" == *'${'* || "$_san" == .* || "$_san" == *. || "$_san" == *..* ]]; then
+        die "Cert '$LE_CERT_NAME' has a malformed SAN: '$_san' (an unresolved/empty hostname variable?)." \
+            "Set the base hostname the way the app defines it, then re-run:" \
+            "  prod: BASE_DOMAIN=<your-domain>   (or .generated/.env.prod with PROD_DOMAIN)"
+    fi
+done < <(_split_sans "$SANS")
 
 CERTBOT_D_ARGS="$(certbot_d_args "$SANS")"
 log_ok "SANs: $(_split_sans "$SANS" | paste -sd', ')"
@@ -77,7 +92,7 @@ ensure_dependencies certbot-do dig curl openssl
 
 # ---- interactive walkthrough for the human-only steps (each preflight-gated) ----
 walkthrough_domain_email "$LE_ENV_FILE"
-walkthrough_do_token     "$LE_ENV_FILE"
+[[ "${LE_CHALLENGE:-dns}" == "dns" ]] && walkthrough_do_token     "$LE_ENV_FILE"   # DNS-01 only; HTTP-01 needs no token
 walkthrough_dns_delegation "$LE_DOMAIN"
 walkthrough_port_forward
 
@@ -85,7 +100,12 @@ walkthrough_port_forward
 log_step "Preflight (issuance)"
 [[ -n "${LE_DOMAIN:-}" ]]    || die "LE_DOMAIN unset."  "Set LE_DOMAIN and re-run."
 [[ -n "${LE_EMAIL:-}" ]]     || die "LE_EMAIL unset."   "Set LE_EMAIL and re-run."
-[[ -n "${DO_API_TOKEN:-}" ]] || die "DO_API_TOKEN unset." "Provide the DigitalOcean token and re-run."
+LE_CHALLENGE="${LE_CHALLENGE:-dns}"
+if [[ "$LE_CHALLENGE" == "dns" ]]; then
+    [[ -n "${DO_API_TOKEN:-}" ]] || die "DO_API_TOKEN unset." "Provide the DigitalOcean token and re-run (or LE_CHALLENGE=http)."
+else
+    [[ -n "${LE_WEBROOT:-}" ]] || die "LE_WEBROOT unset (HTTP-01 needs the webroot the proxy serves at /.well-known/acme-challenge/)."
+fi
 log_ok "All required values present."
 
 # ---- idempotency check against existing issued cert ----
@@ -97,32 +117,10 @@ if cert_is_valid "$LIVE_CERT"; then
 fi
 
 # ---- write the DO credentials ini (certbot-dns-digitalocean expects this) ----
-# ---- challenge: dns (DigitalOcean DNS-01, default) or http (HTTP-01 webroot) ----
-# LE_CHALLENGE=http needs no DNS-provider API: the prod proxy serves
-# /.well-known/acme-challenge/ from .generated/certbot-www on :80, so any
-# registrar works. DNS-01 stays the default (it also allows internal-only names).
-LE_CHALLENGE="${LE_CHALLENGE:-dns}"
-LE_WEBROOT="${LE_WEBROOT:-$CA_DIR/../../.generated/certbot-www}"
-if [[ "$LE_CHALLENGE" == "http" ]]; then
-    log_step "HTTP-01 webroot ($LE_WEBROOT) — the proxy must be up on :80"
-    mkdir -p "$LE_WEBROOT"
-    run certbot certonly \
-        --webroot -w "$LE_WEBROOT" \
-        --cert-name "$LE_CERT_NAME" \
-        --config-dir "$CERTBOT_CONFIG_DIR" \
-        --work-dir "$CERTBOT_CONFIG_DIR/work" \
-        --logs-dir "$CERTBOT_CONFIG_DIR/logs" \
-        -m "$LE_EMAIL" \
-        --non-interactive --agree-tos \
-        $CERTBOT_D_ARGS
-    reclaim_sudo_ownership "$CERTBOT_CONFIG_DIR" "$LE_ENV_FILE"
-    bash "$CA_DIR/stage-edge-cert.sh" "$CERTBOT_CONFIG_DIR/live/$LE_CERT_NAME" || true
-    log_ok "Edge cert issued (HTTP-01) -> $CERTBOT_CONFIG_DIR/live/$LE_CERT_NAME/fullchain.pem"
-    exit 0
-fi
-
 log_step "DigitalOcean credentials file"
-if [[ "$DRY_RUN" == "true" ]]; then
+if [[ "$LE_CHALLENGE" != "dns" ]]; then
+    log_ok "HTTP-01 challenge: no DigitalOcean credentials needed"
+elif [[ "$DRY_RUN" == "true" ]]; then
     echo "  ${C_YELLOW}DRY-RUN${C_RESET} would write $DO_CREDS_FILE (chmod 600) with dns_digitalocean_token=***"
 else
     mkdir -p "$CERTBOT_CONFIG_DIR"
@@ -133,13 +131,18 @@ else
 fi
 
 # ---- AUTO-BUILD + run certbot from the manifest SANs ----
-log_step "Issue edge cert via DNS-01 (DigitalOcean)"
+if [[ "$LE_CHALLENGE" == "dns" ]]; then
+    log_step "Issue edge cert via DNS-01 (DigitalOcean)"
+    CHALLENGE_ARGS="--dns-digitalocean --dns-digitalocean-credentials $DO_CREDS_FILE --dns-digitalocean-propagation-seconds 60"
+else
+    log_step "Issue edge cert via HTTP-01 (webroot $LE_WEBROOT, served by the proxy on port 80)"
+    mkdir -p "$LE_WEBROOT/.well-known/acme-challenge" 2>/dev/null || true
+    CHALLENGE_ARGS="--webroot -w $LE_WEBROOT"
+fi
 NONINT_FLAG="--non-interactive --agree-tos"
-# shellcheck disable=SC2086  # $CERTBOT_D_ARGS must word-split into -d flags
+# shellcheck disable=SC2086  # $CERTBOT_D_ARGS / $CHALLENGE_ARGS must word-split
 run certbot certonly \
-    --dns-digitalocean \
-    --dns-digitalocean-credentials "$DO_CREDS_FILE" \
-    --dns-digitalocean-propagation-seconds 60 \
+    $CHALLENGE_ARGS \
     --cert-name "$LE_CERT_NAME" \
     --config-dir "$CERTBOT_CONFIG_DIR" \
     --work-dir "$CERTBOT_CONFIG_DIR/work" \
@@ -156,6 +159,5 @@ if [[ "$DRY_RUN" == "true" ]]; then
     log_ok "DRY-RUN complete — reviewed the exact certbot command above."
 else
     log_ok "Edge cert issued -> $LIVE_CERT"
-    # stage into .generated/certs/edge (what docker-compose.prod.yml mounts) and reload the proxy if it runs
-    bash "$CA_DIR/stage-edge-cert.sh" "$CERTBOT_CONFIG_DIR/live/$LE_CERT_NAME" || true
+    log "Mount this into pol-proxy and reload nginx (renewals via ca/renew.sh)."
 fi
