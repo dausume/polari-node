@@ -4,3 +4,7 @@
 [submodule "polari-framework"]
 	path = polari-framework
 	url = https://github.com/dausume/Polari-Framework.git
+[submodule "polari-eda-tools"]
+	path = polari-eda-tools
+	url = https://github.com/dausume/polari-eda-tools.git
+	branch = dev
