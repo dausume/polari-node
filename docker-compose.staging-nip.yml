@@ -35,7 +35,7 @@
 # MEMORY BUDGET (~2.3GB total for standalone PRF + auth substrate)
 # ==============================================================================
 #   - prf-backend:     384MB (Python)
-#   - prf-file-store:  256MB (MinIO S3 storage)
+#   - prf-file-store:  256MB (SeaweedFS S3 file store)
 #   - prf-frontend:     64MB (nginx static)
 #   - prf-proxy:        64MB (nginx proxy)
 #   - prf-keycloak:   1024MB (JVM — admin console + OIDC)
@@ -166,16 +166,18 @@ services:
         condition: service_healthy
 
   # ===========================================================================
-  # OBJECT STORAGE - MinIO S3-Compatible File Store
+  # OBJECT STORAGE - the file store (SeaweedFS S3, ./prf-file-store; D-fs-1)
   # ===========================================================================
+  # S3 on :9000, the filer's file browser on :9001 — the same contract MinIO
+  # had (minio/minio left Docker Hub 2026-09). Credentials stay on the
+  # MINIO_* knobs. The realm is an OIDC provider for STS (claim mode: the
+  # token's realm roles are the S3 policies) when POLARI_KEYCLOAK_ISSUER_URI
+  # is in the env file, which staging-setup.sh writes; the suite CA is
+  # mounted so the store can fetch the realm's JWKS over TLS.
   prf-file-store:
     build:
-      context: .
-      dockerfile_inline: |
-        FROM minio/minio:latest
-        VOLUME /data
-        EXPOSE 9000 9001
-        CMD ["server", "/data", "--console-address", ":9001"]
+      context: ./prf-file-store
+      dockerfile: Dockerfile
     container_name: prf-file-store
     image: prf-file-store:staging
     restart: always
@@ -188,17 +190,17 @@ services:
       # LAN-staging-grade. Keep MINIO_* client creds on backend in sync.
       - MINIO_ROOT_USER=${POLARI_MINIO_ROOT_USER:-polari-admin}
       - MINIO_ROOT_PASSWORD=${POLARI_MINIO_ROOT_PASS:-polari-file-store-password}
-      # MINIO_SERVER_URL and MINIO_BROWSER_REDIRECT_URL come from env_file
-      # (pre-computed with LOCAL_IP by staging-setup.sh)
+      - FILE_STORE_VOLUME_MB=${FILE_STORE_VOLUME_MB:-256}
     volumes:
       - file-store-data:/data
-    command: server /data --console-address ":9001"
+      - ./ca/root_ca.crt:/etc/seaweedfs/ca.crt:ro
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      start_period: 10s
+      # the S3 port answers (403 without keys is alive) AND the master reports a leader
+      test: ["CMD", "sh", "-c", "curl -s -o /dev/null http://localhost:9000/ && curl -sf http://localhost:9333/cluster/status >/dev/null"]
+      start_period: 15s
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
     deploy:
       resources:
         limits:
