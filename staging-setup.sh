@@ -126,7 +126,8 @@ DNS.2 = prf.${LOCAL_IP}.nip.io
 DNS.3 = api.prf.${LOCAL_IP}.nip.io
 DNS.4 = files.prf.${LOCAL_IP}.nip.io
 DNS.5 = s3.prf.${LOCAL_IP}.nip.io
-DNS.6 = localhost
+DNS.6 = auth.prf.${LOCAL_IP}.nip.io
+DNS.7 = localhost
 EOF
 
     # Generate CSR
@@ -158,7 +159,7 @@ else
         -keyout "$CERTS_DIR/prf-proxy.key" \
         -out "$CERTS_DIR/prf-proxy.crt" \
         -subj "/C=US/ST=State/L=City/O=Polari Systems/OU=Dev/CN=*.prf.${LOCAL_IP}.nip.io" \
-        -addext "subjectAltName=DNS:${LOCAL_IP}.nip.io,DNS:prf.${LOCAL_IP}.nip.io,DNS:api.prf.${LOCAL_IP}.nip.io,DNS:files.prf.${LOCAL_IP}.nip.io,DNS:s3.prf.${LOCAL_IP}.nip.io,DNS:localhost" \
+        -addext "subjectAltName=DNS:${LOCAL_IP}.nip.io,DNS:prf.${LOCAL_IP}.nip.io,DNS:api.prf.${LOCAL_IP}.nip.io,DNS:files.prf.${LOCAL_IP}.nip.io,DNS:s3.prf.${LOCAL_IP}.nip.io,DNS:auth.prf.${LOCAL_IP}.nip.io,DNS:localhost" \
         2>/dev/null
 
     echo -e "  ${YELLOW}Note: Self-signed certificate generated${NC}"
