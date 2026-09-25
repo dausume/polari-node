@@ -62,7 +62,6 @@ else
         echo "  This will be used for:"
         echo "    - PRF Frontend:    https://prf.example.com (or direct IP)"
         echo "    - PRF API:         https://api.prf.example.com (or direct IP)"
-        echo "    - MinIO Console:   https://files.example.com"
         echo "    - MinIO S3 API:    https://s3.example.com"
         echo ""
         read -p "  Production domain: " PROD_DOMAIN
@@ -189,7 +188,6 @@ CORS_ENABLED=true
 
 # MinIO external URLs (pre-computed so compose file doesn't need PROD_DOMAIN interpolation)
 MINIO_SERVER_URL=https://s3.${PROD_DOMAIN}
-MINIO_BROWSER_REDIRECT_URL=https://files.${PROD_DOMAIN}
 
 # ==============================================================================
 # KEYCLOAK (prf-keycloak)
@@ -383,7 +381,6 @@ echo ""
 echo -e "Your production URLs:"
 echo -e "  ${BLUE}PRF Frontend:${NC}  https://prf.${PROD_DOMAIN}"
 echo -e "  ${BLUE}PRF API:${NC}       https://api.prf.${PROD_DOMAIN}"
-echo -e "  ${BLUE}MinIO Console:${NC} https://files.${PROD_DOMAIN}"
 echo -e "  ${BLUE}MinIO S3 API:${NC}  https://s3.${PROD_DOMAIN}"
 echo ""
 echo -e "Generated files (gitignored):"

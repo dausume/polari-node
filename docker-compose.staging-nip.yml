@@ -18,7 +18,6 @@
 #   - PRF Frontend:   https://prf.10.0.0.101.nip.io  or  https://prf.10.0.0.102.nip.io
 #   - PRF API:        https://api.prf.10.0.0.101.nip.io or https://api.prf.10.0.0.102.nip.io
 #   - Keycloak:       https://auth.prf.10.0.0.101.nip.io or https://auth.prf.10.0.0.102.nip.io
-#   - MinIO Console:  https://files.prf.10.0.0.101.nip.io or https://files.prf.10.0.0.102.nip.io
 #   - MinIO S3 API:   https://s3.prf.10.0.0.101.nip.io or https://s3.prf.prf.10.0.0.102.nip.io
 #
 # INTERNAL (docker-network only — for backend service-to-service calls):

@@ -124,10 +124,9 @@ subjectAltName = @alt_names
 DNS.1 = ${LOCAL_IP}.nip.io
 DNS.2 = prf.${LOCAL_IP}.nip.io
 DNS.3 = api.prf.${LOCAL_IP}.nip.io
-DNS.4 = files.prf.${LOCAL_IP}.nip.io
-DNS.5 = s3.prf.${LOCAL_IP}.nip.io
-DNS.6 = auth.prf.${LOCAL_IP}.nip.io
-DNS.7 = localhost
+DNS.4 = s3.prf.${LOCAL_IP}.nip.io
+DNS.5 = auth.prf.${LOCAL_IP}.nip.io
+DNS.6 = localhost
 EOF
 
     # Generate CSR
@@ -159,7 +158,7 @@ else
         -keyout "$CERTS_DIR/prf-proxy.key" \
         -out "$CERTS_DIR/prf-proxy.crt" \
         -subj "/C=US/ST=State/L=City/O=Polari Systems/OU=Dev/CN=*.prf.${LOCAL_IP}.nip.io" \
-        -addext "subjectAltName=DNS:${LOCAL_IP}.nip.io,DNS:prf.${LOCAL_IP}.nip.io,DNS:api.prf.${LOCAL_IP}.nip.io,DNS:files.prf.${LOCAL_IP}.nip.io,DNS:s3.prf.${LOCAL_IP}.nip.io,DNS:auth.prf.${LOCAL_IP}.nip.io,DNS:localhost" \
+        -addext "subjectAltName=DNS:${LOCAL_IP}.nip.io,DNS:prf.${LOCAL_IP}.nip.io,DNS:api.prf.${LOCAL_IP}.nip.io,DNS:s3.prf.${LOCAL_IP}.nip.io,DNS:auth.prf.${LOCAL_IP}.nip.io,DNS:localhost" \
         2>/dev/null
 
     echo -e "  ${YELLOW}Note: Self-signed certificate generated${NC}"
@@ -247,7 +246,6 @@ CORS_ENABLED=true
 
 # MinIO external URLs (pre-computed so compose file doesn't need LOCAL_IP interpolation)
 MINIO_SERVER_URL=https://s3.prf.${LOCAL_IP}.nip.io
-MINIO_BROWSER_REDIRECT_URL=https://files.prf.${LOCAL_IP}.nip.io
 
 # ==============================================================================
 # KEYCLOAK (prf-keycloak)
@@ -443,7 +441,7 @@ echo ""
 echo -e "Your staging URLs (via prf-proxy):"
 echo -e "  ${BLUE}PRF Frontend:${NC}   https://prf.${LOCAL_IP}.nip.io"
 echo -e "  ${BLUE}PRF API:${NC}        https://api.prf.${LOCAL_IP}.nip.io"
-echo -e "  ${BLUE}MinIO Console:${NC}  https://files.prf.${LOCAL_IP}.nip.io"
+echo -e "  ${BLUE}File store S3:${NC}  https://s3.prf.${LOCAL_IP}.nip.io   (keys or Keycloak STS; the store has no browser page published)"
 echo -e "  ${BLUE}MinIO S3 API:${NC}   https://s3.prf.${LOCAL_IP}.nip.io"
 echo ""
 echo -e "To start the environment:"

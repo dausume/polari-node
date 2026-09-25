@@ -46,9 +46,6 @@ http {
         server prf-file-store:9000;
     }
 
-    upstream minio-console {
-        server prf-file-store:9001;
-    }
 
     upstream prf-keycloak {
         # Plain HTTP — the proxy terminates TLS and forwards via the docker
@@ -314,32 +311,9 @@ h1{color:#22c55e;margin-bottom:0.5rem;}p{color:#666;}</style></head>
         }
     }
 
-    # MinIO Console - files.prf.${LOCAL_IP}.nip.io
-    server {
-        listen 443 ssl;
-        server_name files.prf.${LOCAL_IP}.nip.io;
+    # (the file store's browser page on :9001 is NOT published: it has no login of its own — the store is reached through the S3 API only, keys or Keycloak-minted temporary keys; D-fs-1)
 
-        ssl_certificate /etc/nginx/certs/prf-proxy.crt;
-        ssl_certificate_key /etc/nginx/certs/prf-proxy.key;
-
-        # Allow large file uploads via console
-        client_max_body_size 100M;
-
-        location / {
-            proxy_pass http://minio-console;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-
-            # WebSocket support for MinIO Console live updates
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-        }
-    }
-
-    # MinIO S3 API - s3.prf.${LOCAL_IP}.nip.io
+    # the file store S3 API (SeaweedFS) - s3.prf.${LOCAL_IP}.nip.io
     server {
         listen 443 ssl;
         server_name s3.prf.${LOCAL_IP}.nip.io;
