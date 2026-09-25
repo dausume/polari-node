@@ -1,0 +1,33 @@
+# ==============================================================================
+# docker-compose.proof-engines.yml — the PROOF engines worker (polari-proof-tools)
+# ==============================================================================
+# The pinned Lean 4 + Mathlib behind one JSON API (:9810), so the mathproofs
+# module's `lean` tier checks its certificates on whatever device the topology
+# assigns while the core keeps the claim rows. Mirrors eda-engines. The backend
+# delegates through modules/mathproofs/custom/proof_engines.py — ladder:
+# PROOF_ENGINES_URL knob wins; else a local project (POLARI_PROOF_PROJECT +
+# lake); else the local image; else the topology's provider (ModuleAssignment
+# mathproofs.engines@<instance>, `pol allocate mathproofs.engines <inst>`);
+# else an honest refusal. Lean is never run automatically: a person or the
+# pipeline asks (POST /api/mathproofs/claims/{name}/check?tier=lean).
+#
+#   docker compose -p proof-engines -f docker-compose.proof-engines.yml up -d --build
+#   # the image is BIG (Mathlib's compiled oleans, several GB) — built once per pin bump
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  proof-engines:
+    build:
+      context: ./polari-proof-tools
+    image: polari-proof-tools:noble
+    container_name: prf-proof-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9810:9810"
+    mem_limit: 4000m

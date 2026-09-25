@@ -8,3 +8,7 @@
 	path = polari-eda-tools
 	url = https://github.com/dausume/polari-eda-tools.git
 	branch = dev
+[submodule "polari-proof-tools"]
+	path = polari-proof-tools
+	url = https://github.com/dausume/polari-proof-tools.git
+	branch = dev
