@@ -269,6 +269,9 @@ services:
       - MINIO_ENDPOINT=prf-file-store:9000
       - MINIO_ACCESS_KEY=${POLARI_MINIO_ROOT_USER:-polari-admin}
       - MINIO_SECRET_KEY=${POLARI_MINIO_ROOT_PASS:-polari-file-store-password}
+      # fs-2: the browser-reachable S3 host — presigned download links from /object-storage/browse are signed
+      # against it (a browser cannot resolve prf-file-store:9000)
+      - MINIO_PUBLIC_URL=${MINIO_PUBLIC_URL:-https://s3.prf.${LOCAL_IP}.nip.io}
       # WebSocket (STOMP) notifications
       - WEBSOCKET_ENABLED=true
       - WEBSOCKET_PORT=3001

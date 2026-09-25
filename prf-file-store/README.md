@@ -11,7 +11,7 @@ for twelve years, and carries an OIDC/STS door natively. This directory is the O
 | | before (MinIO) | now (SeaweedFS `weed server`) |
 |---|---|---|
 | S3 API | `:9000`, path-style, SigV4 | `:9000`, path-style, SigV4 — the backend's `minio-py` client, presigned URLs, PSC's Java client all unchanged |
-| web UI | `:9001` MinIO console (had a login) | `:9001` the filer's file browser — **no login of its own and not Keycloak-capable, so it is NOT published**: internal to the docker network only (the proxy has no `files.` host, the LAN sees no :9001); the store is reached only through S3 |
+| web UI | `:9001` MinIO console (had a login) | `:9001` the filer's file browser — **no login of its own and not Keycloak-capable, so it is NOT published**: internal to the docker network only (the proxy has no `files.` host, the LAN sees no :9001). **Browsing happens through Polari instead** (fs-2): `/display/file-store` and `GET /object-storage/browse…` on the backend, which exchange the signed-in person's realm token for temporary store keys (the STS door below) — the store applies THEIR roles, anonymous gets 401, download links are signed with their keys and expire |
 | root credentials | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | the same knobs (`pol security` writes `POLARI_MINIO_ROOT_USER/_PASS`) — rendered into `/etc/seaweedfs/s3.json` as the Admin identity at start; **no default secret: the store refuses to start without them** |
 | buckets | made by the applications | the same; a directory under the filer's `/buckets/` IS a bucket (that is how `pol shell publish` uploads: `POST http://prf-file-store:9001/buckets/<bucket>/<key>`) |
 | data | `/data` volume | `/data` volume (`FILE_STORE_VOLUME_MB`, default 256, sizes the volume files — a node knob) |
