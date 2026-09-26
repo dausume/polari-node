@@ -12,3 +12,7 @@
 	path = polari-proof-tools
 	url = https://github.com/dausume/polari-proof-tools.git
 	branch = dev
+[submodule "polari-torch-tools"]
+	path = polari-torch-tools
+	url = https://github.com/dausume/polari-torch-tools.git
+	branch = dev

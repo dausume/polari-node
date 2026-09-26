@@ -1,5 +1,5 @@
 # ==============================================================================
-# docker-compose.torch-engines.yml — the PyTorch engines worker (torch-engines)
+# docker-compose.torch-engines.yml — the PyTorch engines worker (polari-torch-tools)
 # ==============================================================================
 # A pinned CPU PyTorch behind one JSON API (:9820), so tensormath's third
 # ComputeImplementation (`stress-from-strain/torch`, D5) runs on whatever
@@ -21,8 +21,8 @@ networks:
 services:
   torch-engines:
     build:
-      context: ./torch-engines
-    image: polari-torch-engines:bookworm
+      context: ./polari-torch-tools
+    image: polari-torch-tools:bookworm
     container_name: prf-torch-engines
     restart: unless-stopped
     networks:
