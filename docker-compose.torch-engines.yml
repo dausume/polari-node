@@ -1,0 +1,32 @@
+# ==============================================================================
+# docker-compose.torch-engines.yml — the PyTorch engines worker (torch-engines)
+# ==============================================================================
+# A pinned CPU PyTorch behind one JSON API (:9820), so tensormath's third
+# ComputeImplementation (`stress-from-strain/torch`, D5) runs on whatever
+# device the topology assigns while the core keeps the rows. Mirrors
+# eda-engines / proof-engines. The backend delegates through
+# modules/tensormath/custom/torch_engine.py — ladder: TORCH_ENGINES_URL knob
+# wins; else `import torch` in the framework process (never on the Alpine
+# node image — no musl wheel); else the topology's provider (ModuleAssignment
+# tensormath.engines@<instance>, `pol allocate tensormath.engines <inst>`);
+# else an honest refusal.
+#
+#   docker compose -p torch-engines -f docker-compose.torch-engines.yml up -d --build
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  torch-engines:
+    build:
+      context: ./torch-engines
+    image: polari-torch-engines:bookworm
+    container_name: prf-torch-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9820:9820"
+    mem_limit: 2000m
