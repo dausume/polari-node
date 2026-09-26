@@ -165,6 +165,7 @@
       # ~/tools binaries); SET = that worker always (unreachable =
       # refusal, never a silent local fallback).
       - CNTFET_ENGINES_URL=${CNTFET_ENGINES_URL:-}
+      - TORCH_ENGINES_URL=${TORCH_ENGINES_URL:-}   # D5: the torch engines worker (polari-torch-tools, :9820); unset = the ladder's other rungs, or an honest refusal
 #     healthcheck:
 #       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/', timeout=5)"]
 #       interval: 10s

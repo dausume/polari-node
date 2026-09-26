@@ -283,6 +283,7 @@ services:
       # ~/tools binaries); SET = that worker always (unreachable =
       # refusal, never a silent local fallback).
       - CNTFET_ENGINES_URL=${CNTFET_ENGINES_URL:-}
+      - TORCH_ENGINES_URL=${TORCH_ENGINES_URL:-}   # D5: the torch engines worker (polari-torch-tools, :9820); unset = the ladder's other rungs, or an honest refusal
       # mtg-2: the meeting media server (pol-livekit, `pol compose
       # livekit up`). LIVEKIT_KEYS must MATCH that service's generated
       # livekit/keys.env or every minted token is garbage; the file is
