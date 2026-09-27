@@ -166,6 +166,7 @@
       # refusal, never a silent local fallback).
       - CNTFET_ENGINES_URL=${CNTFET_ENGINES_URL:-}
       - TORCH_ENGINES_URL=${TORCH_ENGINES_URL:-}   # D5: the torch engines worker (polari-torch-tools, :9820); unset = the ladder's other rungs, or an honest refusal
+      - ORFS_ENGINES_URL=${ORFS_ENGINES_URL:-}     # eng-1: the OpenROAD flow worker (prf-orfs-engines, :9801, built FROM openroad/orfs); unset = the local pinned image, the topology provider computelod.pnr, or an honest refusal
 #     healthcheck:
 #       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/', timeout=5)"]
 #       interval: 10s

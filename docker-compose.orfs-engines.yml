@@ -1,0 +1,30 @@
+# ==============================================================================
+# docker-compose.orfs-engines.yml — the OpenROAD FLOW worker (eng-1, polari-eda-tools/Dockerfile.orfs)
+# ==============================================================================
+# The pinned openroad/orfs image + the eda-engines service (WORKER_KIND=orfs) behind one JSON API (:9801), so the
+# whole place-and-route flow (computelod lod-3e / lod-3f) runs on whatever device the topology assigns while the core
+# keeps the rows. The backend delegates through modules/computelod/custom/eda_engines.py — ladder for the ORFS
+# engines: ORFS_ENGINES_URL knob wins; else the local openroad/orfs image; else the topology's provider
+# (ModuleAssignment computelod.pnr@<instance>, `pol allocate computelod.pnr <inst>`); else an honest refusal.
+# Cost (rc-1): image 4.69 GB on disk; the adder flow peaks at 527 MB / 68 CPU-s (measured); mem_limit below is the cap.
+#
+#   docker compose -p orfs-engines -f docker-compose.orfs-engines.yml up -d --build
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  orfs-engines:
+    build:
+      context: ./polari-eda-tools
+      dockerfile: Dockerfile.orfs
+    image: prf-orfs-engines:staging
+    container_name: prf-orfs-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9801:9801"
+    mem_limit: 3000m
