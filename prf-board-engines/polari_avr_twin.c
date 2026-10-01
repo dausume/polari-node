@@ -8,7 +8,8 @@
  *     this harness owns the UART through its IRQs: UART_IRQ_OUTPUT → the client, the client → UART_IRQ_INPUT, paced
  *     at one byte time (10 bits at 115200 Bd) and only while the UART raises XON (its input fifo has room).
  *   - ADC0 driven from OUTSIDE (simavr's ADC_IRQ_ADC0 carries millivolts): a fixed value (--adc0-mv) or a
- *     triangle ramp (--adc0-ramp lo,hi,period_ms) — the TMP36's output, 750 mV = 25 °C.
+ *     triangle ramp (--adc0-ramp lo,hi,period_ms) — the TMP36's output, 750 mV = 25 °C. brd-fi: ADC1..ADC5 held at
+ *     fixed millivolts too (--adc-mv CH=MV, repeatable) — the uno-adc-sweep variant reads A0..A2.
  *   - PORTB5 (D13, the LED) observed through its ioport IRQ: every edge is a JSON line on stdout; OCR0A (the PWM
  *     compare, data address 0x47) is read on every status line.
  *   - real-time pacing by default (sim time tracks wall time, so 10 Hz telemetry is 10 Hz on the wire);
@@ -159,7 +160,7 @@ static void status(const char *t, uint32_t adc_mv, double wall0)
 static void usage(void)
 {
     fprintf(stderr, "usage: polari-avr-twin --hex FW.hex [--mcu atmega328p] [--freq 16000000] [--tcp PORT]\n"
-                    "       [--adc0-mv MV | --adc0-ramp LO,HI,PERIOD_MS] [--free] [--status-ms MS] [--seconds S]\n"
+                    "       [--adc0-mv MV | --adc0-ramp LO,HI,PERIOD_MS] [--adc-mv CH=MV ...] [--free] [--status-ms MS] [--seconds S]\n"
                     "       [--bench CYCLES] [--state-size]\n");
 }
 
@@ -170,6 +171,8 @@ int main(int argc, char **argv)
     int port = 0, realtime = 1, state_size = 0;
     unsigned long long bench = 0;
     double seconds = 0;
+    uint32_t adc_ch_mv[6] = { 0 };   /* brd-fi: ADC1..ADC5 (index = channel; ADC0 has its own flags) */
+    int adc_ch_set[6] = { 0 };
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--hex") && i + 1 < argc) hex = argv[++i];
         else if (!strcmp(argv[i], "--mcu") && i + 1 < argc) mcu = argv[++i];
@@ -178,6 +181,12 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--adc0-mv") && i + 1 < argc) adc_mv = (uint32_t)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--adc0-ramp") && i + 1 < argc) {
             if (sscanf(argv[++i], "%u,%u,%u", &ramp_lo, &ramp_hi, &ramp_ms) != 3 || !ramp_ms) { usage(); return 2; }
+        }
+        else if (!strcmp(argv[i], "--adc-mv") && i + 1 < argc) {
+            unsigned ch = 0, mv = 0;
+            if (sscanf(argv[++i], "%u=%u", &ch, &mv) != 2 || ch < 1u || ch > 5u) { usage(); return 2; }
+            adc_ch_mv[ch] = mv;
+            adc_ch_set[ch] = 1;
         }
         else if (!strcmp(argv[i], "--free")) realtime = 0;
         else if (!strcmp(argv[i], "--status-ms") && i + 1 < argc) status_ms = (uint32_t)strtoul(argv[++i], NULL, 10);
@@ -232,6 +241,8 @@ int main(int argc, char **argv)
     avr_irq_t *adc0 = avr_io_getirq(g_avr, AVR_IOCTL_ADC_GETIRQ, ADC_IRQ_ADC0);
     avr_irq_register_notify(avr_io_getirq(g_avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 5), pb5, NULL);
     avr_raise_irq(adc0, ramp_ms ? ramp_lo : adc_mv);
+    for (unsigned ch = 1u; ch <= 5u; ch++)
+        if (adc_ch_set[ch]) avr_raise_irq(avr_io_getirq(g_avr, AVR_IOCTL_ADC_GETIRQ, ADC_IRQ_ADC0 + ch), adc_ch_mv[ch]);
 
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
@@ -253,7 +264,8 @@ int main(int argc, char **argv)
         if (g_listen < 0) { fprintf(stderr, "cannot listen on tcp %d: %s\n", port, strerror(errno)); return 1; }
     }
     printf("{\"t\":\"ready\",\"mcu\":\"%s\",\"freq\":%u,\"hex\":\"%s\",\"flash_bytes_loaded\":%u,\"tcp\":%d,\"realtime\":%d,"
-           "\"adc0\":\"%s\"}\n", mcu, freq, hex, f.flashsize, port, realtime, ramp_ms ? "ramp" : "fixed");
+           "\"adc0\":\"%s\",\"adc1_mv\":%u,\"adc2_mv\":%u}\n", mcu, freq, hex, f.flashsize, port, realtime, ramp_ms ? "ramp" : "fixed",
+           adc_ch_mv[1], adc_ch_mv[2]);
     fflush(stdout);
 
     const avr_cycle_count_t poll_every = freq / 10000u;          /* 100 us of sim time */

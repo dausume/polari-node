@@ -8,7 +8,7 @@ toolchain, its flasher and its twin in ONE image, from Debian 13 (trixie) packag
 | `gcc-avr` / `binutils-avr` / `avr-libc` | 1:14.2.0-2 / 2.43.50.20250108-1 / 1:2.2.1-1 | GPL-3.0+ (runtime exception) / GPL-3.0+ / modified BSD | the C compiler (RULE 2: plain C, no Arduino core) |
 | `avrdude` | 7.1+dfsg-3+b2 | GPL-2.0 | the flasher — only ever on the host holding the USB port |
 | `simavr` + `libsimavr2` | 1.6+dfsg-3+b3 | GPL-3.0 | the AVR simulator |
-| `polari-avr-twin` (built here, `polari_avr_twin.c`) | — | GPL-3.0 (links libsimavr) | simavr with USART0 ↔ TCP, the ADC0 stimulus (mV), the PORTB5 trace, `--bench`, `--state-size` |
+| `polari-avr-twin` (built here, `polari_avr_twin.c`) | — | GPL-3.0 (links libsimavr) | simavr with USART0 ↔ TCP, the ADC0 stimulus (mV; brd-fi: ADC1..5 held via `--adc-mv CH=MV`), the PORTB5 trace, `--bench`, `--state-size` |
 | `make`, `python3-falcon`, `gunicorn` | trixie | GPL-3.0+ / Apache-2.0 / MIT | the template Makefile; the `/capability` + `/run` worker |
 
 Base: `debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a`. Every tool is a
