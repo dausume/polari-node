@@ -1,0 +1,5 @@
+{"imageMb": 534.7, "ramMb": 32, "fidelity": "measured", "measuredAt": "2026-10-01", "host": "pol-core (Intel Core i5-4590, 4 cpus, 16 GB)",
+ "compile": {"engine": "avr-gcc", "cpu_s": 0.11, "peak_rss_mb": 30.5, "wall_s": 0.11, "source": "worker /run rusage, UNO firmware (3 runs)"},
+ "twin": {"engine": "avr-twin", "cycles_per_s": 78553965, "realtime_factor": 4.91, "peak_rss_mb": 11.2, "source": "polari-avr-twin --bench 160000000"},
+ "build": {"wall_s": 46.1, "note": "docker build --no-cache with the digest-pinned base already local (apt downloads included)"},
+ "note": "res-2 block (brd-1): MEASURED — modules/board/COST.md"}
