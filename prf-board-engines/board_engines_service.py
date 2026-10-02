@@ -31,8 +31,12 @@ ENGINES = {'avr-gcc': 'avr-gcc', 'avr-objcopy': 'avr-objcopy', 'avr-size': 'avr-
            # sc-0 (firmwarefaults): the disassembly + symbols a scenario resolves its PCs against, and the VCD reader
            'avr-objdump': 'avr-objdump', 'avr-nm': 'avr-nm', 'vcd-window': 'polari-vcd-window'}
 VERSION_ARGS = {'avrdude': ['-?'], 'simavr': ['--list-cores'], 'avr-twin': None}
+#: the ceiling for ONE /run's outputs — files + stdout + stderr together (WORKER_MAX_MB, default 16 MB). Until sc-2 the
+#: worker kept only the last 20 000 characters of stdout/stderr, so `avr-objdump -d` of the UNO firmware (≈ 87 kB) lost
+#: its start (hal_millis) through the worker while the local image saw it all. Now stdout/stderr come back WHOLE, their
+#: lengths are stated (stdout_chars / stderr_chars, the client checks them), and a run past the ceiling is REFUSED (413) —
+#: never silently cut.
 MAX_BYTES = int(os.environ.get('WORKER_MAX_MB', '16')) * 1024 * 1024
-TAIL = 20000
 
 
 def _version(engine):
@@ -138,21 +142,25 @@ class Run:
             except subprocess.TimeoutExpired:
                 return _bad(resp, '%s exceeded %.0fs' % (engine, timeout), falcon.HTTP_504)
             c1 = resource.getrusage(resource.RUSAGE_CHILDREN)
-            files, files_b64, total = {}, {}, 0
+            files, files_b64 = {}, {}
+            total = len(run.stdout.encode('utf-8', 'replace')) + len(run.stderr.encode('utf-8', 'replace'))
+            if total > MAX_BYTES:
+                return _bad(resp, '%s wrote %d bytes to stdout/stderr — past WORKER_MAX_MB (%d B); refused, never cut' % (engine, total, MAX_BYTES), falcon.HTTP_413)
             for fn in sorted(os.listdir(work)):
                 fp = os.path.join(work, fn)
                 if fn in sent or not os.path.isfile(fp):
                     continue
                 data = open(fp, 'rb').read(); total += len(data)
                 if total > MAX_BYTES:
-                    return _bad(resp, 'outputs exceed WORKER_MAX_MB', falcon.HTTP_413)
+                    return _bad(resp, 'outputs (files + stdout + stderr) exceed WORKER_MAX_MB (%d B)' % MAX_BYTES, falcon.HTTP_413)
                 if b'\0' in data[:4096]:
                     files_b64[fn] = base64.b64encode(data).decode()
                 else:
                     files[fn] = data.decode('utf-8', 'replace')
             cost = {'wall_s': round(time.perf_counter() - t0, 3), 'cpu_s': round((c1.ru_utime - c0.ru_utime) + (c1.ru_stime - c0.ru_stime), 3),
                     'peak_rss_mb': round(c1.ru_maxrss / 1024.0, 1), 'source': 'worker rusage(RUSAGE_CHILDREN) around the engine'}
-            resp.media = {'ok': True, 'engine': engine, 'returncode': run.returncode, 'stdout': run.stdout[-TAIL:], 'stderr': run.stderr[-TAIL:],
+            resp.media = {'ok': True, 'engine': engine, 'returncode': run.returncode, 'stdout': run.stdout, 'stderr': run.stderr,
+                          'stdout_chars': len(run.stdout), 'stderr_chars': len(run.stderr), 'max_bytes': MAX_BYTES,
                           'files': files, 'files_b64': files_b64, 'cost': cost}
         finally:
             shutil.rmtree(work, ignore_errors=True)

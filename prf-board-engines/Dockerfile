@@ -8,6 +8,8 @@
 #                                                                                                         sc-0: the scenario flags (twin_forcing.c: --irq-at, --poke, VCD, stack, ISR latency)
 #                                                                                                         sc-1: twin_scenario_io.c (--inject, --respond, --drop-frame, --uart-ber, --rx-noise,
 #                                                                                                         --reset-at, --jump-at, EEPROM set/dump, tx/rx logs); -lm for the exponential gaps
+#                                                                                                         sc-2: --align-at-pc, --flip-bit, --drop-frame tx:N / rx:p=P, 64 --irq-at;
+#                                                                                                         the worker returns stdout/stderr WHOLE (was: the last 20 000 chars)
 #   pyvcd 0.5.0 + polari-vcd-window     MIT (pyvcd; pure Python, no deps)                                 sc-0: the engine-side VCD reader (the "cycles around the fault" rows);
 #                                                                                                         trixie has no python3-pyvcd, so the PyPI wheel is installed BY HASH in the build stage
 #   make (GPL-3.0+) so the template Makefile also runs in the image

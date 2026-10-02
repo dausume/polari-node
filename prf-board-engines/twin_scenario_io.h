@@ -7,6 +7,8 @@
  *   --respond 0xPATTERN=FILE[,delay=CYC][,max=K]   a scripted host: whenever the board's TX stream ends with PATTERN
  *                                 (hex, `??` = any byte), queue FILE's bytes as one reply unit DELAY cycles later
  *   --drop-frame rx:N             the Nth host→board unit (1-based, in feed order) never reaches the board (the lost ack)
+ *   --drop-frame rx:p=P           sc-2: each host→board unit is lost with probability P (one draw per unit from --seed)
+ *   --drop-frame tx:N[,type=0xTT] sc-2: the Nth board→host frame (of msg_type TT) never reaches the host (TX held 4 bytes)
  *   --uart-ber P                  every host→board bit flips with probability P, drawn from --seed: a data bit → the byte
  *                                 XORed; the stop bit → UART_INPUT_FE (a framing error, the byte still delivered); the
  *                                 start bit → the byte is lost (the receiver never saw a start)
@@ -33,6 +35,10 @@ int sio_init(avr_t *avr);
 void sio_set_seed(unsigned long long seed);         /* the BER and noise draws (separate streams) */
 void sio_step(avr_t *avr);
 void sio_tx_byte(avr_t *avr, uint8_t b);
+void sio_tx_byte_at(avr_t *avr, uint8_t b, uint64_t cycle);
+int sio_tx_drop_active(void);                        /* sc-2: --drop-frame tx: — forcing_uart_byte routes TX bytes here */
+void sio_tx_drop_push(avr_t *avr, uint8_t b);        /* emits through forcing_uart_emit (twin_forcing.h) */
+void sio_tx_drop_flush(avr_t *avr);
 void sio_finish_json(avr_t *avr);                     /* prints ,"key":… fields into the final scenario line */
 
 #endif

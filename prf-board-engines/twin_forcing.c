@@ -27,6 +27,15 @@
  *   --ret-hist VEC:FILE         every time vector VEC is taken, count its return address (the main-loop PC it
  *                               interrupted) — "pc count" lines: the PHASE of that interrupt against the loop
  *   --ret-log VEC:FILE          the same, one line per time taken: "cycle return_pc first_watch_word" (which tick landed where)
+ * sc-2:
+ *   --align-at-pc pc=0xADDR,vec=N[,when=…]   like --irq-at pc=, but WITHOUT the extra tick: the vector is serviced at that PC
+ *                               (the same PC-equality service) and the NEXT genuine raise of that vector is swallowed
+ *                               (avr_clear_interrupt) — the forced one IS the genuine one, moved earlier. The final line says
+ *                               by how many cycles it was advanced; if the genuine raise had merged into the forced pending
+ *                               (it came within one natural period), nothing is swallowed and the event says "merged"
+ *   --flip-bit 0xADDR:BIT@CYCLE  XOR one bit of one data byte at the first boundary >= CYCLE (flip-bit-at-cycle; a single
+ *                               event upset), recorded with the byte before and after
+ *   --irq-at may be given up to 64 times (the statistics tier's edge trains)
  *   the host-side / power-rail flags live in twin_scenario_io.c (--inject, --respond, --drop-frame, --uart-ber,
  *   --rx-noise, --reset-at, --jump-at, --eeprom-set/-dump, --uart-tx-log/-rx-log)
  */
@@ -40,7 +49,7 @@
 #include <sim_interrupts.h>
 #include <sim_irq.h>
 
-#define MAX_IRQ_AT 4
+#define MAX_IRQ_AT 64
 #define MAX_POKES 8
 #define MAX_VEC 64
 #define PAINT 0xA5u
@@ -64,6 +73,9 @@ typedef struct {
     uint32_t landed_pc;
     uint64_t landed_cycle;
     uint32_t watch_at_event;
+    /* sc-2 align-at-pc: the next genuine raise is swallowed (no extra tick) */
+    int align, swallow_done;      /* swallow_done: 0 waiting, 1 swallowed, 2 merged (the genuine raise fell into the forced pending) */
+    uint64_t swallow_cycle, period;
 } irq_at_t;
 
 typedef struct {
@@ -74,6 +86,8 @@ typedef struct {
     int done;
     uint64_t done_cycle;
     uint32_t done_pc;
+    int flip_bit;                 /* sc-2: -1 = write the value; 0..7 = XOR this bit (flip-bit-at-cycle) */
+    uint8_t before, after;
 } poke_t;
 
 typedef struct {
@@ -129,6 +143,7 @@ static int g_forced_now;
 
 /* ISR latency per vector */
 static uint64_t g_pend_cycle[MAX_VEC];
+static uint64_t g_pend_prev[MAX_VEC], g_period[MAX_VEC];   /* sc-2: the natural period of each vector (last two raises) */
 static int g_pend_forced[MAX_VEC];
 static uint64_t g_lat_max[MAX_VEC], g_lat_min[MAX_VEC], g_lat_n[MAX_VEC], g_lat_sum[MAX_VEC];
 static avr_t *g_av;
@@ -189,6 +204,19 @@ int forcing_parse_arg(int argc, char **argv, int *i)
         if (g_nirq >= MAX_IRQ_AT || parse_kv_irq(v, &g_irq[g_nirq]) < 0) return -1;
         g_nirq++; (*i)++; g_active = 1; return 1;
     }
+    if (!strcmp(a, "--align-at-pc") && v) {
+        if (g_nirq >= MAX_IRQ_AT || parse_kv_irq(v, &g_irq[g_nirq]) < 0 || !g_irq[g_nirq].by_pc) return -1;
+        g_irq[g_nirq].align = 1;
+        g_nirq++; (*i)++; g_active = 1; return 1;
+    }
+    if (!strcmp(a, "--flip-bit") && v) {
+        poke_t *p = &g_poke[g_npoke];
+        unsigned addr = 0, bit = 0;
+        unsigned long long cyc = 0;
+        if (g_npoke >= MAX_POKES || sscanf(v, "%i:%u@%lli", (int *)&addr, &bit, (long long *)&cyc) != 3 || bit > 7) return -1;
+        p->addr = (uint16_t)addr; p->w = 1; p->val = 0; p->cycle = cyc; p->flip_bit = (int)bit;
+        g_npoke++; (*i)++; g_active = 1; return 1;
+    }
     if (!strcmp(a, "--poke") && v) {
         poke_t *p = &g_poke[g_npoke];
         unsigned addr = 0, w = 1, val = 0;
@@ -199,7 +227,7 @@ int forcing_parse_arg(int argc, char **argv, int *i)
             if (sscanf(v, "%i=%i@%lli", (int *)&addr, (int *)&val, (long long *)&cyc) != 3) return -1;
         }
         if (w < 1 || w > 4) return -1;
-        p->addr = (uint16_t)addr; p->w = (int)w; p->val = val; p->cycle = cyc;
+        p->addr = (uint16_t)addr; p->w = (int)w; p->val = val; p->cycle = cyc; p->flip_bit = -1;
         g_npoke++; (*i)++; g_active = 1; return 1;
     }
     if (!strcmp(a, "--watch") && v) {
@@ -262,24 +290,62 @@ const char *forcing_usage(void)
     snprintf(buf, sizeof buf, "       scenario (sc-0): [--irq-at pc=0xADDR,vec=N[,when=0xADDR/W&0xMASK=0xVAL][,shots=K] | --irq-at cycle=N,vec=V]\n"
            "       [--poke 0xADDR[/W]=0xVAL@CYCLE] [--watch 0xADDR/W[=name]] [--trace-vcd FILE [--trace-window B:A]] [--sp-watch]\n"
            "       [--stack-fill 0xBSS_END] [--isr-latency] [--fn-cycles 0xSTART:0xEND] [--uart-out FILE] [--seed N] [--list-vectors]\n"
-           "       [--ret-hist VEC:FILE] [--ret-log VEC:FILE]\n%s", sio_usage());
+           "       [--ret-hist VEC:FILE] [--ret-log VEC:FILE]\n"
+           "       scenario (sc-2): [--align-at-pc pc=0xADDR,vec=N[,when=...]] [--flip-bit 0xADDR:BIT@CYCLE]\n%s", sio_usage());
     return buf;
 }
 
 int forcing_active(void) { return g_active; }
 
-void forcing_uart_byte(uint8_t b)
+void forcing_uart_emit(uint8_t b, uint64_t cycle)
 {
     g_uart_bytes++;
     if (g_uart_f) fputc(b, g_uart_f);
-    if (g_av) sio_tx_byte(g_av, b);
+    if (g_av) sio_tx_byte_at(g_av, b, cycle);
+}
+
+void forcing_uart_byte(uint8_t b)
+{
+    if (g_av && sio_tx_drop_active()) { sio_tx_drop_push(g_av, b); return; }   /* sc-2: --drop-frame tx: holds and filters */
+    forcing_uart_emit(b, g_av ? g_av->cycle : 0);
+}
+
+/* sc-2 align-at-pc: the genuine raise the forced one stood in for. This notify runs INSIDE avr_raise_interrupt, before
+ * simavr marks the vector pending (and a raise is serviced within the same avr_run, so it is never visible pending at a
+ * step boundary while I is set) — so the swallow clears the vector's ENABLE bit for this one raise (simavr then does not
+ * latch it) and the next step restores the enable bit and clears the raised flag (OCF2A), as if the compare had not
+ * fired. A raise more than one natural period after the forced one means the due raise had merged into the forced
+ * pending (simavr drops a raise while pending, without a notify): nothing is swallowed. */
+static int g_reenable_vec, g_in_forced_raise;
+
+static void swallow_check(int v)
+{
+    for (int k = 0; k < g_nirq; k++) {
+        irq_at_t *q = &g_irq[k];
+        if (!q->align || q->vec != v || !q->landed || q->swallow_done || g_av->cycle <= q->landed_cycle) continue;
+        if (q->period && g_av->cycle - q->ev_cycle >= q->period) { q->swallow_done = 2; return; }
+        avr_int_vector_t *vec = find_vec(g_av, v);
+        if (!vec || !vec->enable.reg) return;
+        g_av->data[vec->enable.reg] &= (uint8_t)~(vec->enable.mask << vec->enable.bit);
+        g_reenable_vec = v;
+        q->swallow_done = 1;
+        q->swallow_cycle = g_av->cycle;
+        g_pend_cycle[v] = 0;
+        return;
+    }
 }
 
 static void on_pending(struct avr_irq_t *irq, uint32_t value, void *param)
 {
     (void)irq;
     int v = (int)(intptr_t)param;
-    if (value) g_pend_cycle[v] = g_av->cycle;
+    if (value) {
+        g_pend_cycle[v] = g_av->cycle;
+        if (g_in_forced_raise) return;          /* the forced raise is neither a period sample nor a genuine raise */
+        if (g_pend_prev[v] && g_av->cycle > g_pend_prev[v]) g_period[v] = g_av->cycle - g_pend_prev[v];
+        g_pend_prev[v] = g_av->cycle;
+        swallow_check(v);
+    }
 }
 
 static void on_running(struct avr_irq_t *irq, uint32_t value, void *param)
@@ -385,10 +451,24 @@ void forcing_step(avr_t *avr)
 {
     g_forced_now = 0;
     sio_step(avr);
+    if (g_reenable_vec) {                /* sc-2 align-at-pc: the swallowed raise is over — the enable bit back, its flag cleared */
+        avr_int_vector_t *vec = find_vec(avr, g_reenable_vec);
+        if (vec) {
+            avr->data[vec->enable.reg] |= (uint8_t)(vec->enable.mask << vec->enable.bit);
+            if (vec->raised.reg) avr->data[vec->raised.reg] &= (uint8_t)~(vec->raised.mask << vec->raised.bit);
+            if (avr_is_interrupt_pending(avr, vec)) avr_clear_interrupt(avr, vec);
+        }
+        g_reenable_vec = 0;
+    }
     for (int k = 0; k < g_npoke; k++) {
         poke_t *p = &g_poke[k];
         if (p->done || avr->cycle < p->cycle) continue;
-        for (int b = 0; b < p->w; b++) avr_core_watch_write(avr, (uint16_t)(p->addr + b), (uint8_t)(p->val >> (8 * b)));
+        p->before = avr->data[p->addr];
+        if (p->flip_bit >= 0)
+            avr_core_watch_write(avr, p->addr, (uint8_t)(avr->data[p->addr] ^ (1u << p->flip_bit)));
+        else
+            for (int b = 0; b < p->w; b++) avr_core_watch_write(avr, (uint16_t)(p->addr + b), (uint8_t)(p->val >> (8 * b)));
+        p->after = avr->data[p->addr];
         p->done = 1; p->done_cycle = avr->cycle; p->done_pc = avr->pc;
         g_forced_now = 1;
         trigger(avr);
@@ -410,7 +490,9 @@ void forcing_step(avr_t *avr)
         trigger(avr);
         sample_t s0;
         sample(avr, &s0);                    /* the boundary it fired on, before the vector is taken */
+        g_in_forced_raise = 1;
         int raised = avr_raise_interrupt(avr, vec);
+        g_in_forced_raise = 0;
         if (raised) g_pend_forced[q->vec] = 1;
         int now = 0;
         if (q->by_pc && raised && i0) {      /* take it HERE: the ISR returns to q->pc, the instruction not yet run */
@@ -420,7 +502,8 @@ void forcing_step(avr_t *avr)
         /* serviced at once: keep the pre-vector boundary in the window (the regular sample below shows the vector);
          * left pending: the regular sample IS this boundary — no duplicate */
         if (now && g_vcd_path && g_after_left > 0 && g_out_n < g_before + g_after + 1) { g_out[g_out_n++] = s0; g_after_left--; }
-        if (first) { q->ev_cycle = c0; q->ev_pc = pc0; q->ev_raised = raised; q->ev_i = i0; q->ev_serviced_now = now; q->watch_at_event = w0; }
+        if (first) { q->ev_cycle = c0; q->ev_pc = pc0; q->ev_raised = raised; q->ev_i = i0; q->ev_serviced_now = now; q->watch_at_event = w0;
+                     q->period = g_period[q->vec]; }
     }
     if (g_sp_watch) {
         uint16_t sp = sp_of(avr);
@@ -501,6 +584,7 @@ static int write_vcd(avr_t *avr)
 
 void forcing_finish(avr_t *avr, double wall_s)
 {
+    if (sio_tx_drop_active()) sio_tx_drop_flush(avr);
     if (g_uart_f) { fclose(g_uart_f); g_uart_f = NULL; }
     int vcd_ok = (g_vcd_path && g_trig) ? (write_vcd(avr) == 0) : 0;
     printf("{\"t\":\"scenario\",\"seed\":%llu,\"cycles\":%llu,\"wall_s\":%.4f,\"ramend\":%u,\"events\":[",
@@ -509,16 +593,21 @@ void forcing_finish(avr_t *avr, double wall_s)
         irq_at_t *q = &g_irq[k];
         printf("%s{\"kind\":\"%s\",\"vec\":%d,\"target_pc\":%u,\"target_cycle\":%llu,\"fired\":%d,\"cycle\":%llu,\"pc\":%u,"
                "\"raised\":%d,\"sreg_i\":%d,\"serviced_at_pc\":%d,\"landed\":%d,\"landed_pc\":%u,\"landed_cycle\":%llu,"
-               "\"latency_cycles\":%lld,\"watch_at_event\":%u}",
-               k ? "," : "", q->by_pc ? "irq-at-pc" : "irq-at-cycle", q->vec, q->pc, (unsigned long long)q->cycle, q->fired,
+               "\"latency_cycles\":%lld,\"watch_at_event\":%u,\"align\":%d,\"swallow\":\"%s\",\"swallow_cycle\":%llu,"
+               "\"advanced_by_cycles\":%lld,\"period_cycles\":%llu}",
+               k ? "," : "", q->align ? "align-at-pc" : q->by_pc ? "irq-at-pc" : "irq-at-cycle", q->vec, q->pc, (unsigned long long)q->cycle, q->fired,
                (unsigned long long)q->ev_cycle, q->ev_pc, q->ev_raised, q->ev_i, q->ev_serviced_now, q->landed, q->landed_pc,
-               (unsigned long long)q->landed_cycle, q->landed ? (long long)(q->landed_cycle - q->ev_cycle) : -1LL, q->watch_at_event);
+               (unsigned long long)q->landed_cycle, q->landed ? (long long)(q->landed_cycle - q->ev_cycle) : -1LL, q->watch_at_event, q->align,
+               !q->align ? "" : q->swallow_done == 1 ? "swallowed" : q->swallow_done == 2 ? "merged" : "pending-never-came",
+               (unsigned long long)q->swallow_cycle, q->swallow_done == 1 ? (long long)(q->swallow_cycle - q->ev_cycle) : -1LL,
+               (unsigned long long)q->period);
     }
     printf("],\"pokes\":[");
     for (int k = 0; k < g_npoke; k++) {
         poke_t *p = &g_poke[k];
-        printf("%s{\"addr\":%u,\"w\":%d,\"val\":%u,\"at_cycle\":%llu,\"done\":%d,\"cycle\":%llu,\"pc\":%u}", k ? "," : "", p->addr, p->w,
-               p->val, (unsigned long long)p->cycle, p->done, (unsigned long long)p->done_cycle, p->done_pc);
+        printf("%s{\"addr\":%u,\"w\":%d,\"val\":%u,\"flip_bit\":%d,\"at_cycle\":%llu,\"done\":%d,\"cycle\":%llu,\"pc\":%u,\"before\":%u,\"after\":%u}",
+               k ? "," : "", p->addr, p->w, p->val, p->flip_bit, (unsigned long long)p->cycle, p->done, (unsigned long long)p->done_cycle, p->done_pc,
+               p->before, p->after);
     }
     printf("]");
     if (g_sp_watch) printf(",\"min_sp\":%u,\"stack_high_water_sp\":%u", g_min_sp, g_min_sp <= avr->ramend ? avr->ramend - g_min_sp : 0);

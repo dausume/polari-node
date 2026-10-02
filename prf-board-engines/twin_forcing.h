@@ -30,6 +30,8 @@ int forcing_init(avr_t *avr);
 void forcing_step(avr_t *avr);
 /* every byte USART0 transmits (the frames the runner decodes) */
 void forcing_uart_byte(uint8_t b);
+/* sc-2: one byte as the HOST sees it (uart-out, the TX log, the responder) — after the --drop-frame tx: filter */
+void forcing_uart_emit(uint8_t b, uint64_t cycle);
 /* at exit: the VCD window and the final {"t":"scenario", ...} JSON line */
 void forcing_finish(avr_t *avr, double wall_s);
 

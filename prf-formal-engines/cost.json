@@ -1,0 +1,10 @@
+{"imageMb": 408.8, "ramMb": 256, "fidelity": "measured", "measuredAt": "2026-10-02", "host": "pol-core (Intel Core i5-4590, 4 cpus, 16 GB)",
+ "cbmc": {"engine": "cbmc-check", "version": "cbmc 6.6.0 (Debian 6.6.0-4)",
+          "hal_millis_atomic": {"verdict": "decided (bounded, k=2)", "wall_s": 0.097, "peak_rss_mb": 13.8},
+          "hal_millis_bare": {"verdict": "refuted", "wall_s": 0.109, "peak_rss_mb": 14.9, "trace_steps": 301},
+          "rx_ring_64_k4": {"verdict": "decided (bounded, k=4)", "wall_s": 107.7, "peak_rss_mb": 81.5, "note": "the solver cost scales with RX_RING: the same harness at RX_RING 8 takes 1.8 s; k=8 at 64 exceeds a 300 s budget"},
+          "rx_ring_512": {"verdict": "inapplicable (static assert)", "wall_s": 0.024, "peak_rss_mb": 12.4},
+          "source": "polari-cbmc-check wait4 per step (goto-cc + goto-instrument + cbmc), firmwarefaults sc-2b, 2026-10-02"},
+ "cppcheck": {"engine": "cppcheck-run", "version": "cppcheck 2.17.1 (Debian 2.17.1-2)", "per_variant_wall_s": "0.8-1.9", "variants": 16, "all_wall_s": 32.3,
+              "source": "polari-cppcheck-run, 16 UNO variants, 2026-10-02"},
+ "note": "res-2 block (sc-2b): MEASURED — modules/firmwarefaults/COST.md; end to end each check adds ~0.5 s of docker run on the local-image rung"}

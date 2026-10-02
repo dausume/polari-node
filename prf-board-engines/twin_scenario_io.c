@@ -3,6 +3,7 @@
  * Everything here is a function of the flags and --seed: no wall clock, no host timing.
  */
 #include "twin_scenario_io.h"
+#include "twin_forcing.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,7 +50,18 @@ static unit_t *g_units[MAX_UNITS];
 static int g_nunits, g_head;            /* g_head: first unit not finished */
 static int g_started;
 static int g_drop[8], g_ndrop;
-static int g_dropped_idx[8], g_ndropped;
+static int g_dropped_idx[64], g_ndropped;
+static double g_drop_p;                 /* sc-2: --drop-frame rx:p=P — each host→board unit lost with probability P (from --seed) */
+static uint64_t g_rng_drop;
+/* sc-2: --drop-frame tx:N[,type=0xTT] — the Nth board→host frame (of that msg_type) never reaches the host. A frame starts at
+ * the magic 4C 50 + version 02; deciding needs its msg_type (byte 4), so while this flag is on every TX byte is held for
+ * 4 byte slots (the host side sees it ~0.35 ms later; its logged cycle stays the byte's own). */
+static int g_txdrop[8], g_ntxdrop, g_txdrop_type = -1;
+static struct { uint8_t b; uint64_t cyc; } g_txq[4];
+static int g_txqn, g_tx_cur_drop, g_tx_frames, g_tx_counted;
+static struct { int idx, type; uint64_t cycle, last_cycle; unsigned long bytes; } g_txdropped[8];
+static int g_ntxdropped;
+static unsigned long g_tx_bytes_dropped;
 
 static resp_t g_resp[MAX_RESP];
 static int g_nresp;
@@ -197,8 +209,19 @@ int sio_parse_arg(int argc, char **argv, int *i)
         g_nresp++; (*i)++; g_on = 1; return 1;
     }
     if (!strcmp(a, "--drop-frame")) {
-        if (strncmp(v, "rx:", 3) || g_ndrop >= 8) return -1;   /* tx: not needed by any scenario yet — refused, not ignored */
-        g_drop[g_ndrop++] = atoi(v + 3);
+        if (!strncmp(v, "rx:p=", 5)) {                         /* sc-2: a drop PROBABILITY instead of the Nth */
+            g_drop_p = atof(v + 5);
+            if (g_drop_p <= 0 || g_drop_p > 1) return -1;
+        } else if (!strncmp(v, "rx:", 3)) {
+            if (g_ndrop >= 8) return -1;
+            g_drop[g_ndrop++] = atoi(v + 3);
+        } else if (!strncmp(v, "tx:", 3)) {                    /* sc-2: board→host */
+            char buf[64], *c;
+            strncpy(buf, v + 3, sizeof buf - 1); buf[sizeof buf - 1] = 0;
+            if ((c = strchr(buf, ','))) { *c++ = 0; if (strncmp(c, "type=", 5)) return -1; g_txdrop_type = (int)strtol(c + 5, NULL, 0); }
+            if (g_ntxdrop >= 8 || atoi(buf) < 1) return -1;
+            g_txdrop[g_ntxdrop++] = atoi(buf);
+        } else return -1;
         (*i)++; g_on = 1; return 1;
     }
     if (!strcmp(a, "--uart-ber")) { g_ber = atof(v); if (g_ber < 0 || g_ber > 0.5) return -1; (*i)++; g_on = 1; return 1; }
@@ -260,7 +283,7 @@ int sio_parse_arg(int argc, char **argv, int *i)
 
 const char *sio_usage(void)
 {
-    return "       scenario (sc-1): [--inject FILE@CYCLE] [--respond 0xPAT=FILE[,delay=CYC][,max=K]] [--drop-frame rx:N] [--uart-ber P]\n"
+    return "       scenario (sc-1/2): [--inject FILE@CYCLE] [--respond 0xPAT=FILE[,delay=CYC][,max=K]] [--drop-frame rx:N | rx:p=P | tx:N[,type=0xTT]] [--uart-ber P]\n"
            "       [--rx-noise RATE[,byte=0xBB]] [--uart-tx-log FILE] [--uart-rx-log FILE] [--reset-at cycle=N | pc=0xADDR[,nth=K][,after=C]]\n"
            "       [--jump-at cycle=N,pc=0xADDR] [--eeprom-set 0xADDR=HEX] [--eeprom-dump 0xADDR:LEN]\n";
 }
@@ -303,6 +326,7 @@ void sio_set_seed(unsigned long long seed)
 {
     g_rng = seed ^ 0x5EED0BE12ull;
     g_rng_noise = seed ^ 0xA5A5C0FFEEull;
+    g_rng_drop = seed ^ 0xD20F0FA11ull;
 }
 
 static void log_rx(uint64_t cyc, uint8_t b, uint8_t flags)
@@ -370,7 +394,9 @@ void sio_step(avr_t *avr)
             u->idx = ++g_started;
             u->started = avr->cycle;
             for (int k = 0; k < g_ndrop; k++)
-                if (g_drop[k] == u->idx) { u->dropped = 1; if (g_ndropped < 8) g_dropped_idx[g_ndropped++] = u->idx; }
+                if (g_drop[k] == u->idx) u->dropped = 1;
+            if (g_drop_p > 0 && urand(&g_rng_drop) < g_drop_p) u->dropped = 1;   /* one draw per unit, in feed order */
+            if (u->dropped && g_ndropped < 64) g_dropped_idx[g_ndropped++] = u->idx;
         }
         if (u->dropped || u->pos >= u->len) { g_head++; continue; }
         deliver(avr, u->b[u->pos++], 1);
@@ -390,12 +416,59 @@ void sio_step(avr_t *avr)
     }
 }
 
-void sio_tx_byte(avr_t *avr, uint8_t b)
+int sio_tx_drop_active(void) { return g_ntxdrop > 0; }
+
+/* hold 4 bytes; at a frame start (4C 50 02 TT) decide whether this frame is the Nth (of msg_type TT) to drop */
+void sio_tx_drop_push(avr_t *avr, uint8_t b)
+{
+    if (g_txqn < 4) { g_txq[g_txqn].b = b; g_txq[g_txqn].cyc = avr->cycle; g_txqn++; return; }
+    if (g_txq[0].b == 0x4C && g_txq[1].b == 0x50 && g_txq[2].b == 0x02) {
+        int type = g_txq[3].b;
+        g_tx_frames++;
+        g_tx_cur_drop = 0;
+        if (g_txdrop_type < 0 || type == g_txdrop_type) {
+            g_tx_counted++;
+            for (int k = 0; k < g_ntxdrop; k++) if (g_txdrop[k] == g_tx_counted) g_tx_cur_drop = 1;
+            if (g_tx_cur_drop && g_ntxdropped < 8) {
+                g_txdropped[g_ntxdropped].idx = g_tx_counted; g_txdropped[g_ntxdropped].type = type;
+                g_txdropped[g_ntxdropped].cycle = g_txq[0].cyc; g_txdropped[g_ntxdropped].bytes = 0; g_ntxdropped++;
+            }
+        }
+    }
+    uint8_t out = g_txq[0].b;
+    uint64_t cyc = g_txq[0].cyc;
+    memmove(g_txq, g_txq + 1, 3 * sizeof g_txq[0]);
+    g_txq[3].b = b; g_txq[3].cyc = avr->cycle;
+    if (g_tx_cur_drop) {
+        g_tx_bytes_dropped++;
+        if (g_ntxdropped) { g_txdropped[g_ntxdropped - 1].bytes++; g_txdropped[g_ntxdropped - 1].last_cycle = cyc; }
+        return;
+    }
+    forcing_uart_emit(out, cyc);
+}
+
+void sio_tx_drop_flush(avr_t *avr)
+{
+    (void)avr;
+    for (int k = 0; k < g_txqn; k++) {
+        if (g_tx_cur_drop) {
+            g_tx_bytes_dropped++;
+            if (g_ntxdropped) { g_txdropped[g_ntxdropped - 1].bytes++; g_txdropped[g_ntxdropped - 1].last_cycle = g_txq[k].cyc; }
+            continue;
+        }
+        forcing_uart_emit(g_txq[k].b, g_txq[k].cyc);
+    }
+    g_txqn = 0;
+}
+
+void sio_tx_byte(avr_t *avr, uint8_t b) { sio_tx_byte_at(avr, b, avr->cycle); }
+
+void sio_tx_byte_at(avr_t *avr, uint8_t b, uint64_t cycle)
 {
     if (!g_on) return;
     if (g_txlog) {
         uint8_t rec[9];
-        for (int k = 0; k < 8; k++) rec[k] = (uint8_t)(avr->cycle >> (8 * k));
+        for (int k = 0; k < 8; k++) rec[k] = (uint8_t)(cycle >> (8 * k));
         rec[8] = b;
         fwrite(rec, 1, sizeof rec, g_txlog);
     }
@@ -413,7 +486,7 @@ void sio_tx_byte(avr_t *avr, uint8_t b)
         uint8_t *copy = malloc(r->rlen);
         if (!copy) continue;
         memcpy(copy, r->reply, r->rlen);
-        if (add_unit(copy, r->rlen, avr->cycle + r->delay, 1) == 0) r->queued++;
+        if (add_unit(copy, r->rlen, avr->cycle + r->delay, 1) == 0) r->queued++;   /* from the host's moment of seeing it */
     }
 }
 
@@ -444,13 +517,21 @@ void sio_finish_json(avr_t *avr)
                g_jump_pc, g_jump_done, (unsigned long long)g_jump_done_cycle, g_jump_from_pc);
     printf(",\"rx\":{\"units\":%d,\"units_started\":%d,\"unit_bytes\":%lu,\"bytes_fed\":%lu,\"dropped_units\":[", g_nunits, g_started, g_unit_bytes, g_bytes_fed);
     for (int k = 0; k < g_ndropped; k++) printf("%s%d", k ? "," : "", g_dropped_idx[k]);
-    printf("],\"ber\":%.3g,\"bits_flipped\":%lu,\"bytes_corrupted\":%lu,\"framing_errors\":%lu,\"bytes_lost\":%lu,\"noise_bytes\":%lu,\"noise_rate\":%g,"
-           "\"unit_starts\":[", g_ber, g_bits_flipped, g_bytes_corrupted, g_fe, g_lost, g_noise_n, g_noise_rate);
+    printf("],\"drop_p\":%g,\"ber\":%.3g,\"bits_flipped\":%lu,\"bytes_corrupted\":%lu,\"framing_errors\":%lu,\"bytes_lost\":%lu,\"noise_bytes\":%lu,\"noise_rate\":%g,"
+           "\"unit_starts\":[", g_drop_p, g_ber, g_bits_flipped, g_bytes_corrupted, g_fe, g_lost, g_noise_n, g_noise_rate);
     int shown = 0;
     for (int k = 0; k < g_nunits && shown < 32; k++)
         if (g_units[k]->idx) printf("%s{\"idx\":%d,\"kind\":\"%s\",\"cycle\":%llu,\"dropped\":%d,\"len\":%zu}", shown++ ? "," : "", g_units[k]->idx,
                                     g_units[k]->kind ? "reply" : "inject", (unsigned long long)g_units[k]->started, g_units[k]->dropped, g_units[k]->len);
     printf("]}");
+    if (g_ntxdrop) {
+        printf(",\"tx_drop\":{\"type\":%d,\"frames_seen\":%d,\"counted\":%d,\"bytes_dropped\":%lu,\"note\":\"TX held 4 byte slots while on\",\"dropped\":[",
+               g_txdrop_type, g_tx_frames, g_tx_counted, g_tx_bytes_dropped);
+        for (int k = 0; k < g_ntxdropped; k++)
+            printf("%s{\"idx\":%d,\"type\":%d,\"cycle\":%llu,\"last_cycle\":%llu,\"bytes\":%lu}", k ? "," : "", g_txdropped[k].idx,
+                   g_txdropped[k].type, (unsigned long long)g_txdropped[k].cycle, (unsigned long long)g_txdropped[k].last_cycle, g_txdropped[k].bytes);
+        printf("]}");
+    }
     if (g_nresp) {
         printf(",\"responder\":[");
         for (int k = 0; k < g_nresp; k++)

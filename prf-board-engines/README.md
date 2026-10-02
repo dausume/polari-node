@@ -45,8 +45,18 @@ every time a vector is taken — the interrupt's phase against the loop), `--fn-
 **Findings:** simavr 1.6's EEPROM ioctl returns -1 even when it handled the call (only -2 is an error); the twin's EEPROM survives
 `avr_reset()` (verified by the S5 control run); the watchdog reset sets WDRF and resumes the firmware ~256 ms after a hang at WDTO_250MS.
 
+**Scenario flags (sc-2):** `--align-at-pc pc=0x…,vec=N[,when=…]` (serviced at that PC like `--irq-at pc=`, then the NEXT genuine raise of
+the vector is swallowed — no extra tick; simavr services a raise inside the same `avr_run`, so the swallow clears the vector's enable bit
+inside its PENDING notify and restores it, with the raised flag cleared, at the next step), `--flip-bit 0xADDR:BIT@CYCLE`, `--drop-frame
+tx:N[,type=0xTT]` (board→host: the Nth frame — magic 4C 50 + version 02 — of that msg_type never reaches the host; TX is held 4 byte slots
+while on) and `rx:p=P` (each host→board unit lost with probability P from `--seed`), up to 64 `--irq-at`. **The worker's `/run` now returns
+stdout/stderr WHOLE** with their lengths (`stdout_chars`; the framework refuses a cut stream) — it used to keep the last 20 000 characters,
+which cut `avr-objdump -d` of the UNO firmware (≈ 87 kB) and made scenario 1 "inapplicable" through the worker; a run past WORKER_MAX_MB
+(16 MB) is refused (413), never cut.
+
 **Measured (pol-core, 2026-10-01; `cost.json` is served in `/capability`'s `resources` block):** image 534.7 MB (base
 78.8 MB; **534.8 MB after sc-0, +0.12 MB**); `docker build --no-cache` 46 s with the base local (**72.5 s after sc-0**: pip in the build stage); one UNO compile 0.11 CPU-s / 30.5 MB peak RSS; the twin
 78.6 M cycles/s (4.9x real time) at 11.2 MB peak RSS. **sc-1:** image 534 804 667 B (+17 KB, the twin binary only), no-cache build 73.3 s,
-free-running speed unchanged (84–86 M cycles/s), 10 s with the sc-1 per-instruction step 2.83 s (+48 % vs free). Full ledgers:
+free-running speed unchanged (84–86 M cycles/s), 10 s with the sc-1 per-instruction step 2.83 s (+48 % vs free). **sc-2:** 534 811 269 B
+(+6.6 KB), no-cache build 69.4 s, 83.8–84.5 M cycles/s, 10 s with the step 2.82 s (unchanged). Full ledgers:
 `polari-framework/modules/board/COST.md`, `polari-framework/modules/firmwarefaults/COST.md`.

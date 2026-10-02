@@ -1,0 +1,37 @@
+# ==============================================================================
+# docker-compose.formal-engines.yml — the firmware formal + static engines worker (prf-formal-engines)
+# ==============================================================================
+# CBMC (bounded model checking; BSD-4-clause style — an advertising clause, so it
+# is GPL-incompatible to LINK: it runs ONLY as a separate-process engine here)
+# and cppcheck (GPL-3.0, static rules) from Debian 13 packages on the same
+# digest-pinned base as the board engines, behind one JSON API (:9840), so a
+# FormalCheck or a static scan runs on whatever device the topology assigns
+# while the core keeps the rows (sc-2b, AI-Notes/plans/FIRMWARE_SCENARIO_PLAN.md
+# §5 tier 2, D-sc-6). Mirrors board-engines / eda-engines.
+# The framework delegates through modules/firmwarefaults/custom/formal_engines.py —
+# ladder: FORMAL_ENGINES_URL knob wins; else a local binary; else THIS image on
+# the local docker (`docker run`, no service needed); else the topology's
+# provider (ModuleAssignment firmwarefaults.formal@<instance>,
+# `pol allocate firmwarefaults.formal <inst>`); else an honest refusal naming
+# the knob.
+#
+#   docker compose -p formal-engines -f docker-compose.formal-engines.yml build    # the image alone is enough locally
+#   docker compose -p formal-engines -f docker-compose.formal-engines.yml up -d    # the worker, for other devices
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  formal-engines:
+    build:
+      context: ./prf-formal-engines
+    image: prf-formal-engines:trixie
+    container_name: prf-formal-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9840:9840"
+    mem_limit: 1024m
