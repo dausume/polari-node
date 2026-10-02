@@ -8,6 +8,10 @@
 # FormalCheck or a static scan runs on whatever device the topology assigns
 # while the core keeps the rows (sc-2b, AI-Notes/plans/FIRMWARE_SCENARIO_PLAN.md
 # §5 tier 2, D-sc-6). Mirrors board-engines / eda-engines.
+# sc-2c: + Frama-C 33.0 / Mthread (LGPL-2.1; opam-built in two extra stages —
+# Debian has no frama-c package — pruned to its runtime closure, +185 MB) for
+# the ISR-vs-main-loop race checks (engine mthread-check), same worker, same
+# ladder. The first build compiles OCaml for ~9 minutes; later builds reuse it.
 # The framework delegates through modules/firmwarefaults/custom/formal_engines.py —
 # ladder: FORMAL_ENGINES_URL knob wins; else a local binary; else THIS image on
 # the local docker (`docker run`, no service needed); else the topology's
