@@ -6,6 +6,8 @@
 #   simavr + libsimavr2                 GPL-3.0                                                           the AVR twin
 #   polari-avr-twin (built here)        GPL-3.0 (links libsimavr)                                         simavr with USART0↔TCP, ADC0 stimulus, PORTB5 trace;
 #                                                                                                         sc-0: the scenario flags (twin_forcing.c: --irq-at, --poke, VCD, stack, ISR latency)
+#                                                                                                         sc-1: twin_scenario_io.c (--inject, --respond, --drop-frame, --uart-ber, --rx-noise,
+#                                                                                                         --reset-at, --jump-at, EEPROM set/dump, tx/rx logs); -lm for the exponential gaps
 #   pyvcd 0.5.0 + polari-vcd-window     MIT (pyvcd; pure Python, no deps)                                 sc-0: the engine-side VCD reader (the "cycles around the fault" rows);
 #                                                                                                         trixie has no python3-pyvcd, so the PyPI wheel is installed BY HASH in the build stage
 #   make (GPL-3.0+) so the template Makefile also runs in the image
@@ -23,8 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev l
 # sc-0: pyvcd pinned by sha256 (pip --require-hashes refuses anything else)
 RUN printf 'pyvcd==0.5.0 --hash=sha256:dec595b73328a198ccb9981c6a9e9cd09b3c9b60cd42fba12105db9c41ce894d\n' > /tmp/req.txt \
     && python3 -m pip install --no-deps --require-hashes --no-compile --target /opt/pyvcd -r /tmp/req.txt
-COPY polari_avr_twin.c twin_forcing.c twin_forcing.h /src/
-RUN gcc -O2 -Wall -Wextra -o /src/polari-avr-twin /src/polari_avr_twin.c /src/twin_forcing.c -I/usr/include/simavr -lsimavr -lelf
+COPY polari_avr_twin.c twin_forcing.c twin_forcing.h twin_scenario_io.c twin_scenario_io.h /src/
+RUN gcc -O2 -Wall -Wextra -o /src/polari-avr-twin /src/polari_avr_twin.c /src/twin_forcing.c /src/twin_scenario_io.c -I/usr/include/simavr -lsimavr -lelf -lm
 
 FROM ${BASE}
 RUN apt-get update && apt-get install -y --no-install-recommends \

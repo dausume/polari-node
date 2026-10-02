@@ -19,6 +19,8 @@
  * sc-0 (FIRMWARE_SCENARIO_PLAN.md §2a): the SCENARIO flags (twin_forcing.c) — --irq-at pc=/cycle=, --poke, --watch,
  * --trace-vcd/--trace-window, --sp-watch, --stack-fill, --isr-latency, --fn-cycles, --uart-out, --seed — force one
  * interleaving at an exact PC and record the cycle, the landed PC, a VCD window, the stack and the ISR latency.
+ * sc-1: twin_scenario_io.c — the host side of the wire (--inject, --respond, --drop-frame rx:N, --uart-ber, --rx-noise, the
+ * tx/rx logs) and the power rail (--reset-at, --jump-at, EEPROM set/dump), all in cycles; reached through forcing_*().
  *
  * C only (RULE 2 is about the device side; this is the simulator, written in the same language as simavr itself).
  * Output: JSON lines on stdout ({"t":"ready"|"status"|"pb5"|"bench"|"state"|"exit", ...}).

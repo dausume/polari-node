@@ -16,11 +16,22 @@
  *   --stack-fill 0xADDR         paint 0xA5 from ADDR (the end of .bss) to RAMEND before reset; read back at exit
  *   --isr-latency               per vector: cycles from the flag raised (PENDING) to the vector taken (RUNNING)
  *   --fn-cycles 0xSTART:0xEND   cycles from reaching START to reaching END (e.g. hal_millis → its ret): min/max/n
+ *   --fn-cycles 0xSTART:ret     sc-1: … to the RETURN, whichever `ret` takes it (SP rises above its value at entry), the
+ *                               ret's own cycles included — for functions with several exits
  *   --uart-out FILE             every byte USART0 transmits, raw
  *   --seed N                    recorded; scenario runs draw nothing from it yet (start-phase / BER draws are sc-1/2)
  *   --list-vectors              print the interrupt table (index → vector number): it is in REGISTRATION order
+ * sc-1:
+ *   --watch may be given up to 8 times (the first is the VCD's watched word; all are in "watches" at exit)
+ *   --isr-latency also measures each vector's ISR length (RUNNING raised → RUNNING lowered at reti): "isr_cycles"
+ *   --ret-hist VEC:FILE         every time vector VEC is taken, count its return address (the main-loop PC it
+ *                               interrupted) — "pc count" lines: the PHASE of that interrupt against the loop
+ *   --ret-log VEC:FILE          the same, one line per time taken: "cycle return_pc first_watch_word" (which tick landed where)
+ *   the host-side / power-rail flags live in twin_scenario_io.c (--inject, --respond, --drop-frame, --uart-ber,
+ *   --rx-noise, --reset-at, --jump-at, --eeprom-set/-dump, --uart-tx-log/-rx-log)
  */
 #include "twin_forcing.h"
+#include "twin_scenario_io.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +44,7 @@
 #define MAX_POKES 8
 #define MAX_VEC 64
 #define PAINT 0xA5u
+#define MAX_WATCH 8
 
 typedef struct {
     int by_pc;                    /* 1: pc trigger; 0: cycle trigger */
@@ -80,6 +92,16 @@ static int g_npoke;
 static int g_watch_on, g_watch_w;
 static uint16_t g_watch_addr;
 static char g_watch_name[32] = "watch";
+static struct { uint16_t addr; int w; char name[32]; } g_watches[MAX_WATCH];
+static int g_nwatch;
+static uint64_t g_run_start[MAX_VEC], g_isr_max[MAX_VEC], g_isr_min[MAX_VEC], g_isr_n[MAX_VEC], g_isr_sum[MAX_VEC];
+static int g_hist_vec;
+static const char *g_hist_path;
+static uint32_t *g_hist;
+static int g_log_vec;
+static const char *g_log_path;
+static FILE *g_log_f;
+static unsigned long g_log_n;
 static const char *g_vcd_path, *g_uart_path;
 static int g_before = 64, g_after = 192;
 static int g_sp_watch, g_isr_lat;
@@ -89,7 +111,8 @@ static uint16_t g_fill_from;
 static int g_fn_on;
 static uint32_t g_fn_start, g_fn_end;
 static uint64_t g_fn_t0, g_fn_min = UINT64_MAX, g_fn_max, g_fn_n;
-static int g_fn_in;
+static int g_fn_in, g_fn_by_sp;
+static uint16_t g_fn_sp;
 static unsigned long long g_seed;
 static int g_active;
 static FILE *g_uart_f;
@@ -182,9 +205,14 @@ int forcing_parse_arg(int argc, char **argv, int *i)
     if (!strcmp(a, "--watch") && v) {
         unsigned addr = 0, w = 0;
         const char *eq = strchr(v, '=');
-        if (sscanf(v, "%i/%u", (int *)&addr, &w) != 2 || w < 1 || w > 4) return -1;
-        g_watch_on = 1; g_watch_addr = (uint16_t)addr; g_watch_w = (int)w;
-        if (eq) { strncpy(g_watch_name, eq + 1, sizeof g_watch_name - 1); }
+        if (sscanf(v, "%i/%u", (int *)&addr, &w) != 2 || w < 1 || w > 4 || g_nwatch >= MAX_WATCH) return -1;
+        if (!g_watch_on) {
+            g_watch_on = 1; g_watch_addr = (uint16_t)addr; g_watch_w = (int)w;
+            if (eq) { strncpy(g_watch_name, eq + 1, sizeof g_watch_name - 1); }
+        }
+        g_watches[g_nwatch].addr = (uint16_t)addr; g_watches[g_nwatch].w = (int)w;
+        snprintf(g_watches[g_nwatch].name, sizeof g_watches[g_nwatch].name, "%s", eq ? eq + 1 : "watch");
+        g_nwatch++;
         (*i)++; g_active = 1; return 1;
     }
     if (!strcmp(a, "--trace-vcd") && v) { g_vcd_path = v; (*i)++; g_active = 1; return 1; }
@@ -197,20 +225,45 @@ int forcing_parse_arg(int argc, char **argv, int *i)
     if (!strcmp(a, "--stack-fill") && v) { g_fill_on = 1; g_fill_from = (uint16_t)strtoul(v, NULL, 0); (*i)++; g_active = 1; return 1; }
     if (!strcmp(a, "--fn-cycles") && v) {
         unsigned s = 0, e = 0;
-        if (sscanf(v, "%i:%i", (int *)&s, (int *)&e) != 2) return -1;
+        const char *c = strchr(v, ':');
+        if (c && !strcmp(c + 1, "ret")) {
+            s = (unsigned)strtoul(v, NULL, 0);
+            g_fn_by_sp = 1;
+        } else if (sscanf(v, "%i:%i", (int *)&s, (int *)&e) != 2) return -1;
         g_fn_on = 1; g_fn_start = s; g_fn_end = e; (*i)++; g_active = 1; return 1;
     }
     if (!strcmp(a, "--uart-out") && v) { g_uart_path = v; (*i)++; g_active = 1; return 1; }
     if (!strcmp(a, "--list-vectors")) { g_list_vec = 1; g_active = 1; return 1; }
-    if (!strcmp(a, "--seed") && v) { g_seed = strtoull(v, NULL, 0); (*i)++; return 1; }
+    if (!strcmp(a, "--seed") && v) { g_seed = strtoull(v, NULL, 0); sio_set_seed(g_seed); (*i)++; return 1; }
+    if (!strcmp(a, "--ret-hist") && v) {
+        static char path[512];
+        const char *c = strchr(v, ':');
+        if (!c || (g_hist_vec = atoi(v)) <= 0 || g_hist_vec >= MAX_VEC) return -1;
+        snprintf(path, sizeof path, "%s", c + 1);
+        g_hist_path = path; g_isr_lat = 1; (*i)++; g_active = 1; return 1;
+    }
+    if (!strcmp(a, "--ret-log") && v) {
+        static char lpath[512];
+        const char *c = strchr(v, ':');
+        if (!c || (g_log_vec = atoi(v)) <= 0 || g_log_vec >= MAX_VEC) return -1;
+        snprintf(lpath, sizeof lpath, "%s", c + 1);
+        g_log_path = lpath; g_isr_lat = 1; (*i)++; g_active = 1; return 1;
+    }
+    {
+        int r = sio_parse_arg(argc, argv, i);
+        if (r) { if (r > 0) g_active = 1; return r; }
+    }
     return 0;
 }
 
 const char *forcing_usage(void)
 {
-    return "       scenario (sc-0): [--irq-at pc=0xADDR,vec=N[,when=0xADDR/W&0xMASK=0xVAL][,shots=K] | --irq-at cycle=N,vec=V]\n"
+    static char buf[2048];
+    snprintf(buf, sizeof buf, "       scenario (sc-0): [--irq-at pc=0xADDR,vec=N[,when=0xADDR/W&0xMASK=0xVAL][,shots=K] | --irq-at cycle=N,vec=V]\n"
            "       [--poke 0xADDR[/W]=0xVAL@CYCLE] [--watch 0xADDR/W[=name]] [--trace-vcd FILE [--trace-window B:A]] [--sp-watch]\n"
-           "       [--stack-fill 0xBSS_END] [--isr-latency] [--fn-cycles 0xSTART:0xEND] [--uart-out FILE] [--seed N] [--list-vectors]\n";
+           "       [--stack-fill 0xBSS_END] [--isr-latency] [--fn-cycles 0xSTART:0xEND] [--uart-out FILE] [--seed N] [--list-vectors]\n"
+           "       [--ret-hist VEC:FILE] [--ret-log VEC:FILE]\n%s", sio_usage());
+    return buf;
 }
 
 int forcing_active(void) { return g_active; }
@@ -219,6 +272,7 @@ void forcing_uart_byte(uint8_t b)
 {
     g_uart_bytes++;
     if (g_uart_f) fputc(b, g_uart_f);
+    if (g_av) sio_tx_byte(g_av, b);
 }
 
 static void on_pending(struct avr_irq_t *irq, uint32_t value, void *param)
@@ -232,10 +286,26 @@ static void on_running(struct avr_irq_t *irq, uint32_t value, void *param)
 {
     (void)irq;
     int v = (int)(intptr_t)param;
-    if (!value) return;
+    if (!value) {                         /* reti: the ISR's length */
+        if (g_run_start[v]) {
+            uint64_t d = g_av->cycle - g_run_start[v];
+            if (d > g_isr_max[v]) g_isr_max[v] = d;
+            if (!g_isr_n[v] || d < g_isr_min[v]) g_isr_min[v] = d;
+            g_isr_n[v]++;
+            g_isr_sum[v] += d;
+            g_run_start[v] = 0;
+        }
+        return;
+    }
+    g_run_start[v] = g_av->cycle;
     /* the return address the core just pushed: low byte at the old SP, high at old SP-1 (simavr _avr_push_addr) */
     uint16_t sp = sp_of(g_av);
     uint32_t ret = ((uint32_t)g_av->data[sp + 1] << 8 | g_av->data[sp + 2]) << 1;
+    if (g_hist && v == g_hist_vec && (ret >> 1) < 16384u) g_hist[ret >> 1]++;
+    if (g_log_f && v == g_log_vec) {
+        fprintf(g_log_f, "%llu 0x%04x %u\n", (unsigned long long)g_av->cycle, ret, g_watch_on ? rd(g_av, g_watch_addr, g_watch_w) : 0u);
+        g_log_n++;
+    }
     for (int k = 0; k < g_nirq; k++) {
         irq_at_t *q = &g_irq[k];
         if (q->fired && !q->landed && q->vec == v) { q->landed = 1; q->landed_pc = ret; q->landed_cycle = g_av->cycle; }
@@ -263,6 +333,8 @@ int forcing_init(avr_t *avr)
         g_out = calloc((size_t)(g_before + g_after + 1), sizeof *g_out);
         if (!g_ring || !g_out) return -1;
     }
+    if (g_hist_path && !(g_hist = calloc(16384u, sizeof *g_hist))) return -1;
+    if (g_log_path && !(g_log_f = fopen(g_log_path, "w"))) return -1;
     if (g_fill_on) {
         if (g_fill_from < 0x100 || g_fill_from > avr->ramend) { fprintf(stderr, "--stack-fill 0x%x is outside SRAM\n", g_fill_from); return -1; }
         for (uint32_t a = g_fill_from; a <= avr->ramend; a++) avr->data[a] = PAINT;
@@ -283,7 +355,7 @@ int forcing_init(avr_t *avr)
             avr_irq_register_notify(vec->irq + AVR_INT_IRQ_RUNNING, on_running, (void *)(intptr_t)vec->vector);
         }
     }
-    return 0;
+    return sio_init(avr);
 }
 
 static void sample(avr_t *avr, sample_t *s)
@@ -312,6 +384,7 @@ static void trigger(avr_t *avr)
 void forcing_step(avr_t *avr)
 {
     g_forced_now = 0;
+    sio_step(avr);
     for (int k = 0; k < g_npoke; k++) {
         poke_t *p = &g_poke[k];
         if (p->done || avr->cycle < p->cycle) continue;
@@ -353,7 +426,16 @@ void forcing_step(avr_t *avr)
         uint16_t sp = sp_of(avr);
         if (sp < g_min_sp && sp > 0x100) g_min_sp = sp;
     }
-    if (g_fn_on) {
+    if (g_fn_on && g_fn_by_sp) {
+        if (avr->pc == g_fn_start && !running_vec(avr) && !g_fn_in) { g_fn_t0 = avr->cycle; g_fn_in = 1; g_fn_sp = sp_of(avr); }
+        else if (g_fn_in && !running_vec(avr) && sp_of(avr) > g_fn_sp) {
+            uint64_t d = avr->cycle - g_fn_t0;
+            if (d < g_fn_min) g_fn_min = d;
+            if (d > g_fn_max) g_fn_max = d;
+            g_fn_n++;
+            g_fn_in = 0;
+        }
+    } else if (g_fn_on) {
         if (avr->pc == g_fn_start && !running_vec(avr)) { g_fn_t0 = avr->cycle; g_fn_in = 1; }
         else if (avr->pc == g_fn_end && g_fn_in && !running_vec(avr)) {
             uint64_t d = avr->cycle - g_fn_t0;
@@ -455,11 +537,20 @@ void forcing_finish(avr_t *avr, double wall_s)
                    (unsigned long long)g_lat_min[v], (unsigned long long)g_lat_max[v], (double)g_lat_sum[v] / (double)g_lat_n[v]);
             first = 0;
         }
+        printf("},\"isr_cycles\":{");
+        first = 1;
+        for (int v = 1; v < MAX_VEC; v++) {
+            if (!g_isr_n[v]) continue;
+            printf("%s\"%d\":{\"n\":%llu,\"min\":%llu,\"max\":%llu,\"mean\":%.3f}", first ? "" : ",", v, (unsigned long long)g_isr_n[v],
+                   (unsigned long long)g_isr_min[v], (unsigned long long)g_isr_max[v], (double)g_isr_sum[v] / (double)g_isr_n[v]);
+            first = 0;
+        }
         printf("},\"isr_latency_note\":\"cycles from the vector's flag raised (AVR_INT_IRQ_PENDING) to the vector taken "
                "(AVR_INT_IRQ_RUNNING); the forced raise is excluded and reported on its event\"");
     }
     if (g_fn_on)
-        printf(",\"fn_cycles\":{\"start\":%u,\"end\":%u,\"n\":%llu,\"min\":%llu,\"max\":%llu}", g_fn_start, g_fn_end, (unsigned long long)g_fn_n,
+        printf(",\"fn_cycles\":{\"start\":%u,\"end\":%u,\"to\":\"%s\",\"n\":%llu,\"min\":%llu,\"max\":%llu}", g_fn_start, g_fn_end,
+               g_fn_by_sp ? "return (SP above entry; ret included)" : "end pc", (unsigned long long)g_fn_n,
                g_fn_n ? (unsigned long long)g_fn_min : 0ull, (unsigned long long)g_fn_max);
     if (g_watch_on) printf(",\"watch\":{\"name\":\"%s\",\"addr\":%u,\"w\":%d,\"final\":%u}", g_watch_name, g_watch_addr, g_watch_w, rd(avr, g_watch_addr, g_watch_w));
     if (g_vcd_path)
@@ -467,6 +558,26 @@ void forcing_finish(avr_t *avr, double wall_s)
                g_vcd_path, vcd_ok, vcd_ok ? g_out_n : 0, (unsigned long long)g_trig_cycle, g_out_n ? (unsigned long long)g_out[0].cycle : 0ull,
                g_out_n ? (unsigned long long)g_out[g_out_n - 1].cycle : 0ull, g_before, g_after);
     if (g_uart_path) printf(",\"uart_out\":{\"file\":\"%s\",\"bytes\":%lu}", g_uart_path, g_uart_bytes);
+    if (g_nwatch) {
+        printf(",\"watches\":[");
+        for (int k = 0; k < g_nwatch; k++)
+            printf("%s{\"name\":\"%s\",\"addr\":%u,\"w\":%d,\"final\":%u}", k ? "," : "", g_watches[k].name, g_watches[k].addr, g_watches[k].w,
+                   rd(avr, g_watches[k].addr, g_watches[k].w));
+        printf("]");
+    }
+    if (g_hist) {
+        FILE *f = fopen(g_hist_path, "w");
+        unsigned long tot = 0, distinct = 0;
+        for (uint32_t k = 0; k < 16384u; k++) if (g_hist[k]) { tot += g_hist[k]; distinct++; if (f) fprintf(f, "0x%04x %u\n", k << 1, g_hist[k]); }
+        if (f) fclose(f);
+        printf(",\"ret_hist\":{\"vec\":%d,\"file\":\"%s\",\"taken\":%lu,\"distinct_pcs\":%lu}", g_hist_vec, g_hist_path, tot, distinct);
+    }
+    if (g_log_f) {
+        fclose(g_log_f);
+        g_log_f = NULL;
+        printf(",\"ret_log\":{\"vec\":%d,\"file\":\"%s\",\"lines\":%lu}", g_log_vec, g_log_path, g_log_n);
+    }
+    sio_finish_json(avr);
     printf("}\n");
     fflush(stdout);
 }

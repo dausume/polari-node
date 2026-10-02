@@ -8,7 +8,7 @@ toolchain, its flasher and its twin in ONE image, from Debian 13 (trixie) packag
 | `gcc-avr` / `binutils-avr` / `avr-libc` | 1:14.2.0-2 / 2.43.50.20250108-1 / 1:2.2.1-1 | GPL-3.0+ (runtime exception) / GPL-3.0+ / modified BSD | the C compiler (RULE 2: plain C, no Arduino core) |
 | `avrdude` | 7.1+dfsg-3+b2 | GPL-2.0 | the flasher — only ever on the host holding the USB port |
 | `simavr` + `libsimavr2` | 1.6+dfsg-3+b3 | GPL-3.0 | the AVR simulator |
-| `polari-avr-twin` (built here, `polari_avr_twin.c` + `twin_forcing.c`) | — | GPL-3.0 (links libsimavr) | simavr with USART0 ↔ TCP, the ADC0 stimulus (mV; brd-fi: ADC1..5 held via `--adc-mv CH=MV`), the PORTB5 trace, `--bench`, `--state-size`; **sc-0**: the scenario flags (below) |
+| `polari-avr-twin` (built here, `polari_avr_twin.c` + `twin_forcing.c` + `twin_scenario_io.c`) | — | GPL-3.0 (links libsimavr) | simavr with USART0 ↔ TCP, the ADC0 stimulus (mV; brd-fi: ADC1..5 held via `--adc-mv CH=MV`), the PORTB5 trace, `--bench`, `--state-size`; **sc-0/sc-1**: the scenario flags (below) |
 | `pyvcd` 0.5.0 + `polari-vcd-window` (`polari_vcd_window.py`) | PyPI wheel, sha256 `dec595b7…894d` | MIT | sc-0: reads the twin's VCD into the "cycles around the fault" rows (trixie has no `python3-pyvcd`; the wheel is installed by hash in the build stage) |
 | `make`, `python3-falcon`, `gunicorn` | trixie | GPL-3.0+ / Apache-2.0 / MIT | the template Makefile; the `/capability` + `/run` worker |
 
@@ -32,6 +32,21 @@ with I clear it stays pending and the run records where it landed), `--irq-at cy
 `--list-vectors`, and a final `{"t":"scenario", …}` JSON line. **Finding:** `avr->interrupts.vector[]` is in REGISTRATION order, not
 indexed by vector number (index 7 holds vector 5 on the atmega328p core) — the harness always looks a vector up by its number.
 
+**Scenario flags (sc-1, plan §3a/§4; `twin_scenario_io.c`, the host side of the wire and the power rail, all in cycles):**
+`--inject FILE@CYCLE` (host→board bytes at one byte time, only while the UART raises XON), `--respond 0xPATTERN=FILE[,delay=C][,max=K]`
+(a scripted host: a reply queued whenever the TX stream ends with PATTERN, `??` = any byte), `--drop-frame rx:N` (the Nth host→board
+unit never arrives; `tx:` is refused — no scenario needs it), `--uart-ber P` (per bit from `--seed`: data → XOR, stop → `UART_INPUT_FE`,
+start → the byte lost), `--rx-noise RATE[,byte=0xBB]` (asynchronous bytes, exponential gaps), `--uart-tx-log` / `--uart-rx-log`
+(every byte with its cycle), `--reset-at cycle=N | pc=0x…[,nth=K][,after=C]` (`avr_reset()` once — simavr 1.6 has NO brown-out
+model, so a droop mid-write is approximated by a reset), `--jump-at cycle=N,pc=0x…` (a runaway), `--eeprom-set 0xADDR=HEX` /
+`--eeprom-dump 0xADDR:LEN`; resets are counted through simavr's `avr->reset` hook with MCUSR (WDRF = the watchdog). In
+`twin_forcing.c`: `--watch` up to 8 words, each ISR's length (`isr_cycles`), `--ret-hist` / `--ret-log VEC:FILE` (the return PC of
+every time a vector is taken — the interrupt's phase against the loop), `--fn-cycles 0xSTART:ret` (to the return, whichever `ret`).
+**Findings:** simavr 1.6's EEPROM ioctl returns -1 even when it handled the call (only -2 is an error); the twin's EEPROM survives
+`avr_reset()` (verified by the S5 control run); the watchdog reset sets WDRF and resumes the firmware ~256 ms after a hang at WDTO_250MS.
+
 **Measured (pol-core, 2026-10-01; `cost.json` is served in `/capability`'s `resources` block):** image 534.7 MB (base
 78.8 MB; **534.8 MB after sc-0, +0.12 MB**); `docker build --no-cache` 46 s with the base local (**72.5 s after sc-0**: pip in the build stage); one UNO compile 0.11 CPU-s / 30.5 MB peak RSS; the twin
-78.6 M cycles/s (4.9x real time) at 11.2 MB peak RSS. Full ledger: `polari-framework/modules/board/COST.md`.
+78.6 M cycles/s (4.9x real time) at 11.2 MB peak RSS. **sc-1:** image 534 804 667 B (+17 KB, the twin binary only), no-cache build 73.3 s,
+free-running speed unchanged (84–86 M cycles/s), 10 s with the sc-1 per-instruction step 2.83 s (+48 % vs free). Full ledgers:
+`polari-framework/modules/board/COST.md`, `polari-framework/modules/firmwarefaults/COST.md`.
