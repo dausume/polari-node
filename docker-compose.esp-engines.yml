@@ -1,0 +1,41 @@
+# ==============================================================================
+# docker-compose.esp-engines.yml — the ESP32-C3 engines worker (prf-esp-engines)
+# ==============================================================================
+# ESP-IDF v5.5.5 (FreeRTOS inside; riscv32-esp-elf-gcc 14.2.0, the C3's ONE
+# multilib), esptool and Espressif's QEMU fork (esp_develop_9.2.2_20260417,
+# -machine esp32c3) on a digest-pinned ubuntu:24.04, behind the board engines'
+# JSON API (:9850), so `pol board build c3` compiles and a scenario boots on
+# whatever device the topology assigns while the core keeps the rows (sc-3,
+# AI-Notes/plans/FIRMWARE_SCENARIO_PLAN.md §9 sc-3). Mirrors board-engines.
+# The framework delegates through modules/board/custom/board_engines.py, family
+# `esp` — ladder: ESP_ENGINES_URL knob wins; else a local binary; else THIS image
+# on the local docker (`docker run`, no service needed); else the topology's
+# provider (ModuleAssignment board.esp-engines@<instance>,
+# `pol allocate board.esp-engines <inst>`); else an honest refusal.
+#
+# A FLASH never goes through this worker (esptool write_flash / --port is refused
+# 403). The TWIN runs as its own container of the same image
+# (`pol board twin c3 up` → prf-board-twin-c3, TCP 127.0.0.1:9832), not here.
+# Measured (cost.json, served in /capability): image 1.81 GB, one from-scratch
+# idf.py build ≈ 57 s wall / 178 CPU-s / 193 MB peak RSS on pol-core.
+#
+#   docker compose -p esp-engines -f docker-compose.esp-engines.yml build      # the image alone is enough locally
+#   docker compose -p esp-engines -f docker-compose.esp-engines.yml up -d      # the worker, for other devices
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  esp-engines:
+    build:
+      context: ./prf-esp-engines
+    image: prf-esp-engines:noble
+    container_name: prf-esp-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9850:9850"
+    mem_limit: 2048m

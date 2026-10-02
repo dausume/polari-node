@@ -1,0 +1,33 @@
+{
+ "imageMb": 1813.0,
+ "ramMb": 256,
+ "fidelity": "measured",
+ "measuredAt": "2026-10-02",
+ "host": "pol-core (Intel Core i5-4590, 4 cpus, 16 GB)",
+ "image": {
+  "bytes": 1813008516,
+  "layers": "ubuntu:24.04 (digest-pinned) + runtime apt (python3, the QEMU fork's libs, falcon/gunicorn) + /opt/esp: ESP-IDF v5.5.5 431 MB (no .git/examples/docs) + tools 862 MB (riscv32-esp-elf with ONE multilib, rv32imc_zicsr_zifencei/ilp32; picolibc dropped: 2050 \u2192 ~660 MB) + python env 92 MB",
+  "espressif_idf_v5_5_5_compressed_mb": 5116,
+  "why_not_espressif_idf": "every target installed: 5 116 MB compressed (Docker Hub, amd64, 2026-10-02), > 12 GB unpacked \u2014 more than this device had free"
+ },
+ "build": {
+  "engine": "idf-build",
+  "wall_s": 56.9,
+  "cpu_s": 178.0,
+  "peak_rss_mb": 193.2,
+  "source": "polari-idf-build wait4 on idf.py build, a from-scratch build of c3-prio-inversion (2 runs: 56.9 / 57.1 s; c3-sim-rig 56.6 s); size 0.95 s, merge_bin 0.09 s; the build is REPRODUCIBLE (CONFIG_APP_REPRODUCIBLE_BUILD: the same image sha256 across runs and across the image and worker rungs)"
+ },
+ "twin": {
+  "engine": "c3-run",
+  "wall_time_ratio": 0.533,
+  "virtual_instructions_per_s": 66600000,
+  "peak_rss_mb": 43.3,
+  "scenario_run_wall_s": "0.3-0.9 s per scenario run inside QEMU (boot + window, -icount 3, sleep=off); ~1.5 s per run end to end through docker run",
+  "source": "board.custom.sim_cost_c3 on c3-prio-inversion (3 runs: 0.533 / 0.534 / 0.533); twin mode (-icount shift=auto,sleep=on): virtual/wall settles at 0.7-1.1 after a burst of ~35 virtual s in the first ~2 wall s"
+ },
+ "image_build": {
+  "wall_s": 464.4,
+  "note": "docker build --no-cache with the digest-pinned base already local (2026-10-02): apt 110 s, the ESP-IDF shallow recursive clone 86 s, idf_tools (toolchain, QEMU, cmake, ninja) + the python env 154 s, the prune 6 s, the /opt/esp copy into the runtime stage 57 s, export 28 s; network-bound"
+ },
+ "note": "res-2 block (sc-3): MEASURED \u2014 modules/board/COST.md (the C3 section), modules/firmwarefaults/COST.md (sc-3)"
+}
