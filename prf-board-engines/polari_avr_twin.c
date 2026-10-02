@@ -16,6 +16,10 @@
  *     --bench N free-runs N cycles and prints cycles/s (the BoardSimCost measurement), --state-size prints the
  *     simulator's own state sizes.
  *
+ * sc-0 (FIRMWARE_SCENARIO_PLAN.md §2a): the SCENARIO flags (twin_forcing.c) — --irq-at pc=/cycle=, --poke, --watch,
+ * --trace-vcd/--trace-window, --sp-watch, --stack-fill, --isr-latency, --fn-cycles, --uart-out, --seed — force one
+ * interleaving at an exact PC and record the cycle, the landed PC, a VCD window, the stack and the ISR latency.
+ *
  * C only (RULE 2 is about the device side; this is the simulator, written in the same language as simavr itself).
  * Output: JSON lines on stdout ({"t":"ready"|"status"|"pb5"|"bench"|"state"|"exit", ...}).
  */
@@ -41,6 +45,8 @@
 #include <avr_uart.h>
 #include <avr_adc.h>
 #include <avr_ioport.h>
+
+#include "twin_forcing.h"
 
 #define OCR0A_ADDR 0x47u   /* ATmega328P data-space address of OCR0A (I/O 0x27 + 0x20) */
 #define TXBUF 8192
@@ -71,6 +77,7 @@ static void uart_out(struct avr_irq_t *irq, uint32_t value, void *param)
 {
     (void)irq; (void)param;
     g_uart_tx++;
+    forcing_uart_byte((uint8_t)value);
     if (g_client < 0) return;            /* nobody attached: the byte is gone, like a UART with no cable */
     if (g_tx_len < TXBUF) g_tx[g_tx_len++] = (uint8_t)value; else g_tx_dropped++;
 }
@@ -161,7 +168,7 @@ static void usage(void)
 {
     fprintf(stderr, "usage: polari-avr-twin --hex FW.hex [--mcu atmega328p] [--freq 16000000] [--tcp PORT]\n"
                     "       [--adc0-mv MV | --adc0-ramp LO,HI,PERIOD_MS] [--adc-mv CH=MV ...] [--free] [--status-ms MS] [--seconds S]\n"
-                    "       [--bench CYCLES] [--state-size]\n");
+                    "       [--bench CYCLES] [--state-size]\n%s", forcing_usage());
 }
 
 int main(int argc, char **argv)
@@ -193,7 +200,10 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = atof(argv[++i]);
         else if (!strcmp(argv[i], "--bench") && i + 1 < argc) bench = strtoull(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--state-size")) state_size = 1;
-        else { usage(); return 2; }
+        else {
+            int r = forcing_parse_arg(argc, argv, &i);
+            if (r <= 0) { if (r < 0) fprintf(stderr, "bad value for %s\n", argv[i]); usage(); return 2; }
+        }
     }
     if (!hex) { usage(); return 2; }
 
@@ -215,6 +225,8 @@ int main(int argc, char **argv)
     avr_init(g_avr);
     avr_load_firmware(g_avr, &f);
     if (f.flashbase) g_avr->pc = f.flashbase;
+    const int forcing = forcing_active();
+    if (forcing && forcing_init(g_avr) < 0) return 2;
     g_avr->frequency = freq;
     g_avr->vcc = g_avr->avcc = g_avr->aref = 5000;   /* the UNO's 5 V rail; ADMUX REFS0 selects AVcc */
     g_avr->log = 1;                                  /* warnings only */
@@ -275,6 +287,7 @@ int main(int argc, char **argv)
     int st = cpu_Running;
     while (g_run && st != cpu_Done && st != cpu_Crashed) {
         st = avr_run(g_avr);
+        if (forcing) forcing_step(g_avr);
         if (g_avr->cycle < next_poll) continue;
         next_poll = g_avr->cycle + poll_every;
         poll_tcp();
@@ -305,6 +318,7 @@ int main(int argc, char **argv)
         if (seconds > 0 && sim_ms() >= seconds * 1000.0) break;
     }
     status("exit", cur_mv, wall0);
+    if (forcing) forcing_finish(g_avr, now_s() - wall0);
     if (g_client >= 0) close(g_client);
     if (g_listen >= 0) close(g_listen);
     return st == cpu_Crashed ? 3 : 0;

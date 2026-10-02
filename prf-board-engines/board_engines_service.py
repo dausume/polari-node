@@ -27,7 +27,9 @@ import time
 import falcon
 
 ENGINES = {'avr-gcc': 'avr-gcc', 'avr-objcopy': 'avr-objcopy', 'avr-size': 'avr-size', 'avrdude': 'avrdude',
-           'simavr': 'simavr', 'avr-twin': 'polari-avr-twin'}
+           'simavr': 'simavr', 'avr-twin': 'polari-avr-twin',
+           # sc-0 (firmwarefaults): the disassembly + symbols a scenario resolves its PCs against, and the VCD reader
+           'avr-objdump': 'avr-objdump', 'avr-nm': 'avr-nm', 'vcd-window': 'polari-vcd-window'}
 VERSION_ARGS = {'avrdude': ['-?'], 'simavr': ['--list-cores'], 'avr-twin': None}
 MAX_BYTES = int(os.environ.get('WORKER_MAX_MB', '16')) * 1024 * 1024
 TAIL = 20000
