@@ -12,6 +12,8 @@ FORMAL_ENGINES_URL knob → a local binary → this image on the local docker �
                      ARGV ONLY, no shell; `engine` must be in ENGINES. Unlike the board worker, input files keep a RELATIVE
                      path (stubs/avr/io.h — a model's include tree), never absolute and never with `..`.
 
+sc-2c: + Frama-C 33.0 / Mthread (LGPL-2.1, opam-built in this image): `mthread-check` (polari-mthread-check) and `frama-c`.
+
 CBMC's licence is BSD-4-clause style (an advertising clause): it is GPL-incompatible to LINK, fine as a separate process —
 which is all this worker does (plan §2d).
 """
@@ -27,8 +29,11 @@ import time
 import falcon
 
 ENGINES = {'cbmc': 'cbmc', 'goto-cc': 'goto-cc', 'goto-instrument': 'goto-instrument', 'cbmc-check': 'polari-cbmc-check',
-           'cppcheck': 'cppcheck', 'cppcheck-run': 'polari-cppcheck-run'}
-VERSION_ARGS = {'cbmc-check': None, 'cppcheck-run': None}
+           'cppcheck': 'cppcheck', 'cppcheck-run': 'polari-cppcheck-run', 'mthread-check': 'polari-mthread-check', 'frama-c': 'frama-c'}
+WORKER = 'formal-engines'
+VERSION_ARGS = {'cbmc-check': None, 'cppcheck-run': None, 'mthread-check': None, 'frama-c': ['-version']}
+#: our wrappers → the engine they drive (its version is what identifies the run)
+DRIVES = {'cbmc-check': ('cbmc', 'dpkg'), 'cppcheck-run': ('cppcheck', 'dpkg'), 'mthread-check': ('frama-c', 'cli')}
 #: the ceiling for ONE /run's outputs — files + stdout + stderr together (WORKER_MAX_MB, default 32 MB); stdout/stderr come
 #: back WHOLE with their lengths (stdout_chars / stderr_chars — the client refuses a cut stream), past the ceiling = 413
 MAX_BYTES = int(os.environ.get('WORKER_MAX_MB', '32')) * 1024 * 1024
@@ -39,13 +44,22 @@ def _version(engine):
     if not b:
         return ''
     if VERSION_ARGS.get(engine, ['--version']) is None:
-        return 'ours (in this image) — drives %s %s' % (('cbmc', _dpkg('cbmc')) if engine == 'cbmc-check' else ('cppcheck', _dpkg('cppcheck')))
+        tool, how = DRIVES.get(engine, ('?', 'dpkg'))
+        ver = _dpkg(tool) if how == 'dpkg' else _cli_version(tool)
+        return 'ours (in this image) — drives %s %s' % (tool, ver)
     try:
-        r = subprocess.run([b, '--version'], capture_output=True, text=True, timeout=20)
+        r = subprocess.run([b] + VERSION_ARGS.get(engine, ['--version']), capture_output=True, text=True, timeout=20)
         out = (r.stdout or r.stderr or '').strip().splitlines()
         return out[0][:160] if out else 'present'
     except Exception:
         return 'present'
+
+
+def _cli_version(tool):
+    try:
+        return subprocess.run([tool, '-version'], capture_output=True, text=True, timeout=60).stdout.strip()[:80]
+    except Exception:
+        return ''
 
 
 def _dpkg(pkg):
@@ -66,7 +80,7 @@ def _resources_block():
 
 class Capability:
     def on_get(self, req, resp):
-        resp.media = {'worker': 'formal-engines', 'resources': _resources_block(),
+        resp.media = {'worker': WORKER, 'resources': _resources_block(),
                       'engines': {e: {'available': bool(shutil.which(b)), 'version': _version(e), 'binary': b} for e, b in ENGINES.items()},
                       'protocol': 'POST /run {engine, args, files, files_b64, timeout} — argv only; files keep relative paths (no ..)'}
 
@@ -82,7 +96,7 @@ class SystemInfo:
                     info[k] = int(v.split()[0]) * 1024
         except Exception:
             pass
-        resp.media = {'ok': True, 'worker': 'formal-engines', 'cpus': os.cpu_count(), 'memTotalBytes': info.get('MemTotal', 0),
+        resp.media = {'ok': True, 'worker': WORKER, 'cpus': os.cpu_count(), 'memTotalBytes': info.get('MemTotal', 0),
                       'memAvailableBytes': info.get('MemAvailable', 0), 'platform': platform.platform()}
 
 
