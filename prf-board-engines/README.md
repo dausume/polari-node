@@ -1,0 +1,62 @@
+# prf-board-engines
+
+The board arc's engines worker (brd-1, `AI-Notes/plans/BOARD_PROGRAMMING_PLAN.md` §3/§5): the Arduino UNO's open
+toolchain, its flasher and its twin in ONE image, from Debian 13 (trixie) packages on a base pinned by digest.
+
+| piece | version (Debian) | licence | role |
+|---|---|---|---|
+| `gcc-avr` / `binutils-avr` / `avr-libc` | 1:14.2.0-2 / 2.43.50.20250108-1 / 1:2.2.1-1 | GPL-3.0+ (runtime exception) / GPL-3.0+ / modified BSD | the C compiler (RULE 2: plain C, no Arduino core) |
+| `avrdude` | 7.1+dfsg-3+b2 | GPL-2.0 | the flasher — only ever on the host holding the USB port |
+| `simavr` + `libsimavr2` | 1.6+dfsg-3+b3 | GPL-3.0 | the AVR simulator |
+| `polari-avr-twin` (built here, `polari_avr_twin.c` + `twin_forcing.c` + `twin_scenario_io.c`) | — | GPL-3.0 (links libsimavr) | simavr with USART0 ↔ TCP, the ADC0 stimulus (mV; brd-fi: ADC1..5 held via `--adc-mv CH=MV`), the PORTB5 trace, `--bench`, `--state-size`; **sc-0/sc-1**: the scenario flags (below) |
+| `pyvcd` 0.5.0 + `polari-vcd-window` (`polari_vcd_window.py`) | PyPI wheel, sha256 `dec595b7…894d` | MIT | sc-0: reads the twin's VCD into the "cycles around the fault" rows (trixie has no `python3-pyvcd`; the wheel is installed by hash in the build stage) |
+| `make`, `python3-falcon`, `gunicorn` | trixie | GPL-3.0+ / Apache-2.0 / MIT | the template Makefile; the `/capability` + `/run` worker |
+
+Base: `debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a`. Every tool is a
+separate process the framework invokes; nothing is linked into Polari.
+
+    docker compose -p board-engines -f ../docker-compose.board-engines.yml build     # the image (enough for a local device)
+    docker compose -p board-engines -f ../docker-compose.board-engines.yml up -d     # the worker on :9830, for other devices
+
+**Why a harness and not `simavr -u`:** simavr 1.6's `simavr` CLI has no UART-pty option (its `--help` lists `-f -m -t
+-g -v -i -ff -ee -ti` only); the pty part (`uart_pty`) lives in the examples' parts library and opens the pty inside the
+process's own `/dev/pts`, which a containerised twin cannot hand to the host. `polari-avr-twin` owns USART0 through
+simavr's IRQs and serves it on TCP; the host side (`board.custom.twin_pty`) turns that into a pty link the Java bridge
+opens with `source=serial`.
+
+**Scenario flags (sc-0, `AI-Notes/plans/FIRMWARE_SCENARIO_PLAN.md` §2a; `twin_forcing.c`):** `--irq-at pc=0x…,vec=N[,when=0xADDR/W&0xMASK=0xVAL][,shots=K]`
+(raise vector N when the CPU is about to execute that PC and service it at once if SREG.I is set — the ISR returns to that PC;
+with I clear it stays pending and the run records where it landed), `--irq-at cycle=N,vec=V`, `--poke 0xADDR/W=0xVAL@CYCLE`,
+`--watch 0xADDR/W=name`, `--trace-vcd FILE --trace-window B:A` (our own cycle-exact VCD: simavr's writer needs IRQ signals and a
+256-entry FIFO), `--sp-watch`, `--stack-fill 0xBSS_END`, `--isr-latency`, `--fn-cycles 0xSTART:0xEND`, `--uart-out FILE`, `--seed N`,
+`--list-vectors`, and a final `{"t":"scenario", …}` JSON line. **Finding:** `avr->interrupts.vector[]` is in REGISTRATION order, not
+indexed by vector number (index 7 holds vector 5 on the atmega328p core) — the harness always looks a vector up by its number.
+
+**Scenario flags (sc-1, plan §3a/§4; `twin_scenario_io.c`, the host side of the wire and the power rail, all in cycles):**
+`--inject FILE@CYCLE` (host→board bytes at one byte time, only while the UART raises XON), `--respond 0xPATTERN=FILE[,delay=C][,max=K]`
+(a scripted host: a reply queued whenever the TX stream ends with PATTERN, `??` = any byte), `--drop-frame rx:N` (the Nth host→board
+unit never arrives; `tx:` is refused — no scenario needs it), `--uart-ber P` (per bit from `--seed`: data → XOR, stop → `UART_INPUT_FE`,
+start → the byte lost), `--rx-noise RATE[,byte=0xBB]` (asynchronous bytes, exponential gaps), `--uart-tx-log` / `--uart-rx-log`
+(every byte with its cycle), `--reset-at cycle=N | pc=0x…[,nth=K][,after=C]` (`avr_reset()` once — simavr 1.6 has NO brown-out
+model, so a droop mid-write is approximated by a reset), `--jump-at cycle=N,pc=0x…` (a runaway), `--eeprom-set 0xADDR=HEX` /
+`--eeprom-dump 0xADDR:LEN`; resets are counted through simavr's `avr->reset` hook with MCUSR (WDRF = the watchdog). In
+`twin_forcing.c`: `--watch` up to 8 words, each ISR's length (`isr_cycles`), `--ret-hist` / `--ret-log VEC:FILE` (the return PC of
+every time a vector is taken — the interrupt's phase against the loop), `--fn-cycles 0xSTART:ret` (to the return, whichever `ret`).
+**Findings:** simavr 1.6's EEPROM ioctl returns -1 even when it handled the call (only -2 is an error); the twin's EEPROM survives
+`avr_reset()` (verified by the S5 control run); the watchdog reset sets WDRF and resumes the firmware ~256 ms after a hang at WDTO_250MS.
+
+**Scenario flags (sc-2):** `--align-at-pc pc=0x…,vec=N[,when=…]` (serviced at that PC like `--irq-at pc=`, then the NEXT genuine raise of
+the vector is swallowed — no extra tick; simavr services a raise inside the same `avr_run`, so the swallow clears the vector's enable bit
+inside its PENDING notify and restores it, with the raised flag cleared, at the next step), `--flip-bit 0xADDR:BIT@CYCLE`, `--drop-frame
+tx:N[,type=0xTT]` (board→host: the Nth frame — magic 4C 50 + version 02 — of that msg_type never reaches the host; TX is held 4 byte slots
+while on) and `rx:p=P` (each host→board unit lost with probability P from `--seed`), up to 64 `--irq-at`. **The worker's `/run` now returns
+stdout/stderr WHOLE** with their lengths (`stdout_chars`; the framework refuses a cut stream) — it used to keep the last 20 000 characters,
+which cut `avr-objdump -d` of the UNO firmware (≈ 87 kB) and made scenario 1 "inapplicable" through the worker; a run past WORKER_MAX_MB
+(16 MB) is refused (413), never cut.
+
+**Measured (pol-core, 2026-10-01; `cost.json` is served in `/capability`'s `resources` block):** image 534.7 MB (base
+78.8 MB; **534.8 MB after sc-0, +0.12 MB**); `docker build --no-cache` 46 s with the base local (**72.5 s after sc-0**: pip in the build stage); one UNO compile 0.11 CPU-s / 30.5 MB peak RSS; the twin
+78.6 M cycles/s (4.9x real time) at 11.2 MB peak RSS. **sc-1:** image 534 804 667 B (+17 KB, the twin binary only), no-cache build 73.3 s,
+free-running speed unchanged (84–86 M cycles/s), 10 s with the sc-1 per-instruction step 2.83 s (+48 % vs free). **sc-2:** 534 811 269 B
+(+6.6 KB), no-cache build 69.4 s, 83.8–84.5 M cycles/s, 10 s with the step 2.82 s (unchanged). Full ledgers:
+`polari-framework/modules/board/COST.md`, `polari-framework/modules/firmwarefaults/COST.md`.

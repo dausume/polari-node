@@ -1,0 +1,130 @@
+# ==============================================================================
+# docker-compose.hw-engines.yml — the hardware-integration engines SWARM STACK
+# ==============================================================================
+# Binds the four plain `docker run` workers isle-core was carrying
+# (ENGINES-ON-ISLE-CORE.md) into the swarm, pinned to isle-core by node label,
+# so the topology's routing-mesh resolution (http://${LOCAL_IP}:<port>, the
+# same mechanism cnt-engines/engines use) works for a REMOTE machine — his
+# point 2026-10-03: "Polari should already be capable of bundling two devices
+# together via setup from the CLI." No `build:` here on purpose: these images
+# are already present on isle-core (loaded there via `docker save | ssh
+# isle-core docker load`, per board-engines/formal-engines's own compose files
+# and ENGINES-ON-ISLE-CORE.md) — this file only RUNS them, as a stack, instead
+# of four ad-hoc `docker run --restart unless-stopped` containers.
+#
+#   pol swarm join isle-core                      # once, if not already a worker
+#   pol swarm deploy hw-engines                    # dev-hw-test: swarm.sh's
+#                                                   # role_compose_cmd now has a
+#                                                   # "hw-engines" case (merged
+#                                                   # from dev-swarm-fw-handshake)
+#   # or, directly:
+#   docker compose -f docker-compose.hw-engines.yml config \
+#     | python3 ../pol-build/tools/stackify.py \
+#         --constraint board-engines="node.labels.polari.machine==isle-core" \
+#         --constraint formal-engines="node.labels.polari.machine==isle-core" \
+#         --constraint esp-engines="node.labels.polari.machine==isle-core" \
+#         --constraint pcb-engines="node.labels.polari.machine==isle-core" \
+#     | docker stack deploy -c - polari-hw-engines
+#
+# Image provenance / distribution (owed, D-frg-3): these four images were
+# shipped isle-core-ward by `docker save | ssh isle-core docker load`, the
+# same no-registry idiom cnt-engines/msci-engines use (pcb-engines: UNVERIFIED
+# whether it has actually made that trip yet — check on isle-core before
+# relying on it). The home forge (polari-forge, frg-3) is meant to grow a
+# container-registry capability so this becomes `docker pull` from the forge
+# instead of save|load — not built.
+#
+# Costs (COST.md / ENGINES-ON-ISLE-CORE.md, measured on isle-core 2026-10-03):
+#   board-engines   image 535 MB   (155516d7589f)   mem cap 512m
+#   formal-engines  image 594 MB   (24e37129cc7a)   mem cap 1024m
+#   esp-engines     image 1.81 GB  (8e8ad8f64e85)   mem cap 2048m
+#   pcb-engines     image 1.23 GB  (id UNVERIFIED — not recorded in
+#                   prf-pcb-engines/cost.json on dev-pcb-0, only its
+#                   size)                           mem cap 1024m
+#
+# pcb-engines added on dev-hw-test (2026-10-04, step 2): same shape as the
+# three above (kicad-cli, pcb-0), pinned to isle-core, bound into the
+# topology as the `pcb-engines` instance + the `pcb.engines@pcb-engines`
+# ModuleAssignment (topologies/staging-a.topology.yml). UNVERIFIED whether
+# it is already running as a plain `docker run` container on isle-core —
+# check before relying on it.
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  board-engines:
+    image: prf-board-engines:trixie
+    container_name: prf-board-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9830:9830"
+    mem_limit: 512m
+    deploy:
+      placement:
+        constraints:
+          # isle-core = the hardware-integration core (nodes.yml mandate);
+          # `pol allocate board.engines <machine>` rewrites this via
+          # POL_STACK_CONSTRAINTS once a 'hw-engines' swarm role exists.
+          - node.labels.polari.machine == isle-core
+      resources:
+        limits:
+          memory: 512M
+
+  formal-engines:
+    image: prf-formal-engines:trixie
+    container_name: prf-formal-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9840:9840"
+    mem_limit: 1024m
+    deploy:
+      placement:
+        constraints:
+          - node.labels.polari.machine == isle-core
+      resources:
+        limits:
+          memory: 1024M
+
+  esp-engines:
+    image: prf-esp-engines:noble
+    container_name: prf-esp-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9850:9850"
+    mem_limit: 2048m
+    deploy:
+      placement:
+        constraints:
+          - node.labels.polari.machine == isle-core
+      resources:
+        limits:
+          memory: 2048M
+
+  pcb-engines:
+    image: prf-pcb-engines:trixie
+    container_name: prf-pcb-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9860:9860"
+    mem_limit: 1024m
+    deploy:
+      placement:
+        constraints:
+          # isle-core = the hardware-integration core (nodes.yml mandate);
+          # `pol allocate pcb.engines <machine>` rewrites this via
+          # POL_STACK_CONSTRAINTS once a 'hw-engines' swarm role exists.
+          - node.labels.polari.machine == isle-core
+      resources:
+        limits:
+          memory: 1024M

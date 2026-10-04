@@ -1,0 +1,26 @@
+{
+ "fidelity": "measured",
+ "note": "measured at pcb-0 on isle-core, 2026-10-03: the real ecc83-pp board (GPL-2.0-or-later, 15 footprints, 13 nets, 2-layer, all-THT) through every relayed kicad-cli verb",
+ "imageBytes": 1231504880,
+ "imageSizeNote": "1.23 GB (docker image inspect --format '{{.Size}}'); base debian:trixie-slim@sha256:a99cfc51...",
+ "buildTimeNote": "unknown — not logged by the agent that built this image; not rebuilt solely to time it (plan §7: \"else state unknown\")",
+ "displayNote": "no X, no Xvfb needed — kicad-cli is headless (ERC/DRC/gerbers/drill/pos/svg/step all exit 0 with DISPLAY unset)",
+ "wholeBoardIngestWallS": 7.86,
+ "wholeBoardIngestPeakRssMb": 235.7,
+ "byteStable": true,
+ "verbCostsRusage": {
+  "sch erc": {"wall_s": 0.275, "cpu_s": 0.213, "peak_rss_mb": 188.6},
+  "pcb drc --schematic-parity": {"wall_s": 0.754, "cpu_s": 0.462, "peak_rss_mb": 235.7},
+  "pcb drc + dkred .kicad_dru": {"wall_s": 0.713, "cpu_s": 0.420, "peak_rss_mb": 219.5},
+  "pcb export gerbers (protel)": {"wall_s": 0.446, "cpu_s": 0.400, "peak_rss_mb": 220.0},
+  "pcb export gerbers --no-protel-ext": {"wall_s": 0.405, "cpu_s": 0.367, "peak_rss_mb": 220.0},
+  "pcb export drill --generate-map": {"wall_s": 0.426, "cpu_s": 0.391, "peak_rss_mb": 215.2},
+  "pcb export pos": {"wall_s": 0.365, "cpu_s": 0.316, "peak_rss_mb": 109.2},
+  "pcb export svg --mode-multi (7 layers)": {"wall_s": 0.404, "cpu_s": 0.365, "peak_rss_mb": 215.4},
+  "pcb export step --no-components": {"wall_s": 0.405, "cpu_s": 0.523, "peak_rss_mb": 126.6},
+  "sch export bom": {"wall_s": 0.244, "cpu_s": 0.195, "peak_rss_mb": 179.5},
+  "sch export netlist": {"wall_s": 0.214, "cpu_s": 0.164, "peak_rss_mb": 179.8},
+  "sch export svg": {"wall_s": 0.224, "cpu_s": 0.179, "peak_rss_mb": 179.4}
+ },
+ "source": "polari-framework modules/pcb/COST.md (pcb-0)"
+}

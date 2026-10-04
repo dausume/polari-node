@@ -1,0 +1,39 @@
+# ==============================================================================
+# docker-compose.board-engines.yml — the board engines worker (prf-board-engines)
+# ==============================================================================
+# The UNO toolchain (gcc-avr + avr-libc), avrdude and the simavr twin harness
+# (polari-avr-twin) from Debian 13 packages on a digest-pinned base, behind one
+# JSON API (:9830), so `pol board build` compiles on whatever device the
+# topology assigns while the core keeps the rows (brd-1,
+# AI-Notes/plans/BOARD_PROGRAMMING_PLAN.md). Mirrors eda-engines / torch-engines.
+# The framework delegates through modules/board/custom/board_engines.py —
+# ladder: BOARD_ENGINES_URL knob wins; else a local binary; else THIS image on
+# the local docker (`docker run`, no service needed); else the topology's
+# provider (ModuleAssignment board.engines@<instance>,
+# `pol allocate board.engines <inst>`); else an honest refusal.
+#
+# A FLASH never goes through this worker (the USB port is on the host holding
+# the board; the framework refuses a remote flash). The TWIN runs as its own
+# container of the same image (`pol board twin uno up` → prf-board-twin-<board>,
+# TCP 127.0.0.1:9831), not through this service.
+#
+#   docker compose -p board-engines -f docker-compose.board-engines.yml build      # the image alone is enough locally
+#   docker compose -p board-engines -f docker-compose.board-engines.yml up -d      # the worker, for other devices
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  board-engines:
+    build:
+      context: ./prf-board-engines
+    image: prf-board-engines:trixie
+    container_name: prf-board-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9830:9830"
+    mem_limit: 512m

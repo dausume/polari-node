@@ -1,0 +1,35 @@
+# ==============================================================================
+# docker-compose.pcb-engines.yml — the PCB engines worker (prf-pcb-engines)
+# ==============================================================================
+# KiCad 9's headless kicad-cli (ERC, DRC, netlist/BOM/SVG/Gerber/drill/pos/STEP exports) from Debian 13 packages on a
+# digest-pinned base, behind one JSON API (:9860), so `pol pcb ingest` checks and exports on whatever device the
+# topology assigns while the core keeps the rows (pcb-0, AI-Notes/plans/PCB_FROM_SCRATCH_PLAN.md). Mirrors
+# board-engines / esp-engines / formal-engines. The framework delegates through
+# modules/pcb/custom/pcb_engines.py — ladder: PCB_ENGINES_URL knob wins (a declared worker never silently falls back
+# to local); else a local kicad-cli binary; else THIS image on the local docker (`docker run`, no service needed);
+# else the topology's provider (ModuleAssignment pcb.engines@<instance>, `pol allocate pcb.engines <inst>`); else an
+# honest refusal naming the knob.
+#
+# KiCad never places or routes (a person does, in KiCad itself, D-pcb-2) and this image carries NO 3D models
+# (kicad-packages3d is 4.9 GB; a STEP export without them is board body + pads only, per-footprint fetch later).
+#
+#   docker compose -p pcb-engines -f docker-compose.pcb-engines.yml build      # the image alone is enough locally
+#   docker compose -p pcb-engines -f docker-compose.pcb-engines.yml up -d      # the worker, for other devices
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  pcb-engines:
+    build:
+      context: ./prf-pcb-engines
+    image: prf-pcb-engines:trixie
+    container_name: prf-pcb-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9860:9860"
+    mem_limit: 1024m
