@@ -67,6 +67,16 @@ services:
       timeout: 5s
       retries: 3
     deploy:
+      placement:
+        constraints:
+          # fw-1: bind-mounts host paths (ca/root_ca.crt, .generated/* configs) --
+          # must land on the machine that RENDERED the stack, never floated to any
+          # other swarm node. POLARI_MACHINE is exported by `pol swarm render`
+          # (scripts/swarm.sh render_stack) from POLARI_LOCAL_NODE -- the same label
+          # `pol swarm init` stamps on this node from nodes.yml. The :-pol-core
+          # fallback only matters for a raw `docker compose` invocation outside pol;
+          # the swarm render path always sets POLARI_MACHINE itself, never hard-coded.
+          - node.labels.polari.machine == ${POLARI_MACHINE:-pol-core}
       resources:
         limits:
           memory: 512M
@@ -118,6 +128,16 @@ services:
       start_period: 300s
       retries: 3
     deploy:
+      placement:
+        constraints:
+          # fw-1: bind-mounts host paths (ca/root_ca.crt, .generated/* configs) --
+          # must land on the machine that RENDERED the stack, never floated to any
+          # other swarm node. POLARI_MACHINE is exported by `pol swarm render`
+          # (scripts/swarm.sh render_stack) from POLARI_LOCAL_NODE -- the same label
+          # `pol swarm init` stamps on this node from nodes.yml. The :-pol-core
+          # fallback only matters for a raw `docker compose` invocation outside pol;
+          # the swarm render path always sets POLARI_MACHINE itself, never hard-coded.
+          - node.labels.polari.machine == ${POLARI_MACHINE:-pol-core}
       resources:
         limits:
           memory: 1024M
@@ -147,6 +167,16 @@ services:
       # Mount generated nginx config (from staging-setup.sh)
       - ./.generated/nginx.staging.conf:/etc/nginx/nginx.conf:ro
     deploy:
+      placement:
+        constraints:
+          # fw-1: bind-mounts host paths (ca/root_ca.crt, .generated/* configs) --
+          # must land on the machine that RENDERED the stack, never floated to any
+          # other swarm node. POLARI_MACHINE is exported by `pol swarm render`
+          # (scripts/swarm.sh render_stack) from POLARI_LOCAL_NODE -- the same label
+          # `pol swarm init` stamps on this node from nodes.yml. The :-pol-core
+          # fallback only matters for a raw `docker compose` invocation outside pol;
+          # the swarm render path always sets POLARI_MACHINE itself, never hard-coded.
+          - node.labels.polari.machine == ${POLARI_MACHINE:-pol-core}
       resources:
         limits:
           memory: 64M
@@ -201,6 +231,16 @@ services:
       timeout: 5s
       retries: 5
     deploy:
+      placement:
+        constraints:
+          # fw-1: bind-mounts host paths (ca/root_ca.crt, .generated/* configs) --
+          # must land on the machine that RENDERED the stack, never floated to any
+          # other swarm node. POLARI_MACHINE is exported by `pol swarm render`
+          # (scripts/swarm.sh render_stack) from POLARI_LOCAL_NODE -- the same label
+          # `pol swarm init` stamps on this node from nodes.yml. The :-pol-core
+          # fallback only matters for a raw `docker compose` invocation outside pol;
+          # the swarm render path always sets POLARI_MACHINE itself, never hard-coded.
+          - node.labels.polari.machine == ${POLARI_MACHINE:-pol-core}
       resources:
         limits:
           memory: 256M
@@ -225,6 +265,16 @@ services:
       # Mount generated runtime config for nip.io URLs
       - ./.generated/prf-runtime-config.json:/usr/share/nginx/html/assets/runtime-config.json:ro
     deploy:
+      placement:
+        constraints:
+          # fw-1: bind-mounts host paths (ca/root_ca.crt, .generated/* configs) --
+          # must land on the machine that RENDERED the stack, never floated to any
+          # other swarm node. POLARI_MACHINE is exported by `pol swarm render`
+          # (scripts/swarm.sh render_stack) from POLARI_LOCAL_NODE -- the same label
+          # `pol swarm init` stamps on this node from nodes.yml. The :-pol-core
+          # fallback only matters for a raw `docker compose` invocation outside pol;
+          # the swarm render path always sets POLARI_MACHINE itself, never hard-coded.
+          - node.labels.polari.machine == ${POLARI_MACHINE:-pol-core}
       resources:
         limits:
           memory: 64M
@@ -332,6 +382,16 @@ services:
       # POLARI_SHELL_CA_PATH overrides; absence stays honest.
       - ./ca/root_ca.crt:/app/certs/root_ca.crt:ro
     deploy:
+      placement:
+        constraints:
+          # fw-1: bind-mounts host paths (ca/root_ca.crt, .generated/* configs) --
+          # must land on the machine that RENDERED the stack, never floated to any
+          # other swarm node. POLARI_MACHINE is exported by `pol swarm render`
+          # (scripts/swarm.sh render_stack) from POLARI_LOCAL_NODE -- the same label
+          # `pol swarm init` stamps on this node from nodes.yml. The :-pol-core
+          # fallback only matters for a raw `docker compose` invocation outside pol;
+          # the swarm render path always sets POLARI_MACHINE itself, never hard-coded.
+          - node.labels.polari.machine == ${POLARI_MACHINE:-pol-core}
       resources:
         limits:
           # 2026-09-02: was 1024M — the backend task was OOM-killed at its
