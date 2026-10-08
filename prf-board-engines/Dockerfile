@@ -32,7 +32,7 @@ RUN gcc -O2 -Wall -Wextra -o /src/polari-avr-twin /src/polari_avr_twin.c /src/tw
 
 FROM ${BASE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        gcc-avr binutils-avr avr-libc avrdude simavr libsimavr2 make python3-falcon gunicorn \
+        gcc-avr binutils-avr avr-libc avrdude simavr libsimavr2 make cmake python3-falcon gunicorn \
     && rm -rf /var/lib/apt/lists/* \
     && dpkg-query -W -f '${Package} ${Version}\n' gcc-avr binutils-avr avr-libc avrdude simavr libsimavr2 python3-falcon gunicorn
 COPY --from=twin-build /src/polari-avr-twin /usr/local/bin/polari-avr-twin
