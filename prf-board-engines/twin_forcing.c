@@ -38,6 +38,19 @@
  *   --irq-at may be given up to 64 times (the statistics tier's edge trains)
  *   the host-side / power-rail flags live in twin_scenario_io.c (--inject, --respond, --drop-frame, --uart-ber,
  *   --rx-noise, --reset-at, --jump-at, --eeprom-set/-dump, --uart-tx-log/-rx-log)
+ * ucd-0d (UNO_CORE_DEMO_PLAN.md §5e Q7, §5g): PIN-LEVEL forcing, not vector injection — the button's edge is a LEVEL on
+ * the pin, and avr_extint (wired to the ioport pin IRQs) decides whether EICRA's ISCn + EIMSK turn it into a vector:
+ *   --pin-at cycle=N,pin=PD2,level=0|1   (repeatable) raise the ioport PIN irq of that port/bit at the first boundary
+ *                               >= N — the SAME cycle scheduler as --irq-at/--poke, reused (a pinat_t beside irq_at_t
+ *                               and poke_t, serviced in forcing_step). Prints {"t":"pin-at",...} when it fires.
+ *   --wire PSRC:PDST              (repeatable) connect the OUTPUT state of PSRC to the INPUT of PDST: a notify on the
+ *                               source pin's ioport IRQ (the same bidirectional IRQ a driven pin uses to tell the rest
+ *                               of simavr its new level) that raises the destination pin's IRQ with that level — a real
+ *                               wire, not an injected vector. Prints {"t":"wire",...} once at startup and
+ *                               {"t":"wire-edge",...} per propagated edge. If the destination's own DDR bit is later
+ *                               set (the firmware also drives it as an output) the wire and the firmware disagree on
+ *                               who drives that pin: {"t":"wire-conflict",...} is printed (checked every forcing_step,
+ *                               not a one-shot) and the run continues — the negative proof reads this line.
  */
 #include "twin_forcing.h"
 #include "twin_scenario_io.h"
@@ -46,6 +59,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <avr_ioport.h>
 #include <sim_interrupts.h>
 #include <sim_irq.h>
 
@@ -54,6 +68,8 @@
 #define MAX_VEC 64
 #define PAINT 0xA5u
 #define MAX_WATCH 8
+#define MAX_PINAT 32   /* ucd-0d: --pin-at, repeatable (a few presses is plenty; irq-at's 64 is for edge trains) */
+#define MAX_WIRE 8     /* ucd-0d: --wire, repeatable */
 
 typedef struct {
     int by_pc;                    /* 1: pc trigger; 0: cycle trigger */
@@ -99,10 +115,38 @@ typedef struct {
     uint32_t watch;
 } sample_t;
 
+/* ucd-0d: --pin-at — a LEVEL forced onto a port pin at a cycle (the same scheduling shape as poke_t, but raising the
+ * ioport pin IRQ instead of writing data memory, so avr_extint/avr_ioport's own PCINT logic sees a real pin edge) */
+typedef struct {
+    uint64_t cycle;
+    char port;            /* 'B' | 'C' | 'D' */
+    int bit;               /* 0..7 */
+    int level;             /* 0 | 1 */
+    struct avr_irq_t *irq;
+    int done;
+    uint64_t done_cycle;
+} pinat_t;
+
+/* ucd-0d: --wire PSRC:PDST — the source pin's driven-output IRQ connected to the destination pin's input IRQ */
+typedef struct {
+    char src_port; int src_bit;
+    char dst_port; int dst_bit;
+    struct avr_irq_t *src_irq, *dst_irq;
+    int valid;
+    int last_level;        /* -1 = not yet observed */
+    unsigned long edges;
+    int conflict_warned;   /* re-arms: 1 while the destination DDR bit is currently an output */
+    int conflict_seen;     /* sticky, for the final summary */
+} wire_t;
+
 static irq_at_t g_irq[MAX_IRQ_AT];
 static int g_nirq;
 static poke_t g_poke[MAX_POKES];
 static int g_npoke;
+static pinat_t g_pinat[MAX_PINAT];
+static int g_npinat;
+static wire_t g_wire[MAX_WIRE];
+static int g_nwire;
 static int g_watch_on, g_watch_w;
 static uint16_t g_watch_addr;
 static char g_watch_name[32] = "watch";
@@ -173,6 +217,65 @@ static avr_int_vector_t *find_vec(avr_t *avr, int n)
     return NULL;
 }
 
+/* ucd-0d: the DDR data-memory address of a port — hardcoded exactly as OCR0A_ADDR is in polari_avr_twin.c (I/O addr +
+ * 0x20; DDRB/DDRC/DDRD are 0x04/0x07/0x0a in I/O space, DS40002061B §14.4): used only for the --wire conflict check
+ * (did the firmware ALSO configure the destination pin as an output?), never for the pin-level forcing itself. */
+static uint16_t ddr_addr(char port)
+{
+    switch (port) {
+    case 'B': return 0x24u;
+    case 'C': return 0x27u;
+    case 'D': return 0x2au;
+    default: return 0u;
+    }
+}
+
+static struct avr_irq_t *port_irq(avr_t *avr, char port, int bit)
+{
+    return avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ((uint8_t)port), bit);
+}
+
+/* "PXn" (X = B|C|D, n = 0..7), exactly 3 characters, nothing after */
+static int parse_pin_spec(const char *s, char *port, int *bit)
+{
+    if (!s[0] || !s[1] || !s[2] || s[3] || s[0] != 'P' || (s[1] != 'B' && s[1] != 'C' && s[1] != 'D') || s[2] < '0' || s[2] > '7') return -1;
+    *port = s[1];
+    *bit = s[2] - '0';
+    return 0;
+}
+
+static int parse_pinat(const char *s, pinat_t *q)
+{
+    char buf[128];
+    memset(q, 0, sizeof *q);
+    q->level = -1;
+    strncpy(buf, s, sizeof buf - 1);
+    buf[sizeof buf - 1] = 0;
+    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+        if (!strncmp(tok, "cycle=", 6)) q->cycle = strtoull(tok + 6, NULL, 0);
+        else if (!strncmp(tok, "pin=", 4)) { if (parse_pin_spec(tok + 4, &q->port, &q->bit) < 0) return -1; }
+        else if (!strncmp(tok, "level=", 6)) q->level = atoi(tok + 6);
+        else return -1;
+    }
+    return (q->port && (q->level == 0 || q->level == 1)) ? 0 : -1;
+}
+
+static int parse_wire(const char *s, wire_t *w)
+{
+    char buf[32];
+    memset(w, 0, sizeof *w);
+    w->last_level = -1;
+    strncpy(buf, s, sizeof buf - 1);
+    buf[sizeof buf - 1] = 0;
+    char *c = strchr(buf, ':');
+    if (!c) return -1;
+    *c = 0;
+    if (parse_pin_spec(buf, &w->src_port, &w->src_bit) < 0) return -1;
+    if (parse_pin_spec(c + 1, &w->dst_port, &w->dst_bit) < 0) return -1;
+    if (w->src_port == w->dst_port && w->src_bit == w->dst_bit) return -1;   /* the destination must be a DIFFERENT pin */
+    return 0;
+}
+
 static int parse_kv_irq(const char *s, irq_at_t *q)
 {
     char buf[256];
@@ -229,6 +332,14 @@ int forcing_parse_arg(int argc, char **argv, int *i)
         if (w < 1 || w > 4) return -1;
         p->addr = (uint16_t)addr; p->w = (int)w; p->val = val; p->cycle = cyc; p->flip_bit = -1;
         g_npoke++; (*i)++; g_active = 1; return 1;
+    }
+    if (!strcmp(a, "--pin-at") && v) {
+        if (g_npinat >= MAX_PINAT || parse_pinat(v, &g_pinat[g_npinat]) < 0) return -1;
+        g_npinat++; (*i)++; g_active = 1; return 1;
+    }
+    if (!strcmp(a, "--wire") && v) {
+        if (g_nwire >= MAX_WIRE || parse_wire(v, &g_wire[g_nwire]) < 0) return -1;
+        g_nwire++; (*i)++; g_active = 1; return 1;
     }
     if (!strcmp(a, "--watch") && v) {
         unsigned addr = 0, w = 0;
@@ -291,7 +402,8 @@ const char *forcing_usage(void)
            "       [--poke 0xADDR[/W]=0xVAL@CYCLE] [--watch 0xADDR/W[=name]] [--trace-vcd FILE [--trace-window B:A]] [--sp-watch]\n"
            "       [--stack-fill 0xBSS_END] [--isr-latency] [--fn-cycles 0xSTART:0xEND] [--uart-out FILE] [--seed N] [--list-vectors]\n"
            "       [--ret-hist VEC:FILE] [--ret-log VEC:FILE]\n"
-           "       scenario (sc-2): [--align-at-pc pc=0xADDR,vec=N[,when=...]] [--flip-bit 0xADDR:BIT@CYCLE]\n%s", sio_usage());
+           "       scenario (sc-2): [--align-at-pc pc=0xADDR,vec=N[,when=...]] [--flip-bit 0xADDR:BIT@CYCLE]\n"
+           "       ucd-0d: [--pin-at cycle=N,pin=PDn,level=0|1] [--wire PSRCn:PDSTn]\n%s", sio_usage());
     return buf;
 }
 
@@ -389,9 +501,39 @@ static void on_running(struct avr_irq_t *irq, uint32_t value, void *param)
     }
 }
 
+/* ucd-0d: the source pin's own driven-output IRQ fired (simavr's ioport pin IRQs are bidirectional: the same index
+ * carries an external level IN and the port's driven level OUT) — propagate it onto the destination pin, exactly as a
+ * real wire would, and say so on stdout (the proof reads this line). */
+static void wire_notify(struct avr_irq_t *irq, uint32_t value, void *param)
+{
+    (void)irq;
+    int idx = (int)(intptr_t)param;
+    wire_t *w = &g_wire[idx];
+    int v = value ? 1 : 0;
+    if (v == w->last_level) return;
+    w->last_level = v;
+    w->edges++;
+    avr_raise_irq(w->dst_irq, (uint32_t)v);
+    printf("{\"t\":\"wire-edge\",\"src\":\"P%c%d\",\"dst\":\"P%c%d\",\"v\":%d,\"cycle\":%llu}\n",
+           w->src_port, w->src_bit, w->dst_port, w->dst_bit, v, (unsigned long long)g_av->cycle);
+    fflush(stdout);
+}
+
 int forcing_init(avr_t *avr)
 {
     g_av = avr;
+    for (int k = 0; k < g_npinat; k++)
+        g_pinat[k].irq = port_irq(avr, g_pinat[k].port, g_pinat[k].bit);
+    for (int k = 0; k < g_nwire; k++) {
+        wire_t *w = &g_wire[k];
+        w->src_irq = port_irq(avr, w->src_port, w->src_bit);
+        w->dst_irq = port_irq(avr, w->dst_port, w->dst_bit);
+        if (!w->src_irq || !w->dst_irq) { fprintf(stderr, "--wire P%c%d:P%c%d: no such ioport pin\n", w->src_port, w->src_bit, w->dst_port, w->dst_bit); return -1; }
+        avr_irq_register_notify(w->src_irq, wire_notify, (void *)(intptr_t)k);
+        w->valid = 1;
+        printf("{\"t\":\"wire\",\"src\":\"P%c%d\",\"dst\":\"P%c%d\",\"applied\":1}\n", w->src_port, w->src_bit, w->dst_port, w->dst_bit);
+    }
+    if (g_npinat || g_nwire) fflush(stdout);
     if (g_uart_path && !(g_uart_f = fopen(g_uart_path, "wb"))) { fprintf(stderr, "cannot write %s\n", g_uart_path); return -1; }
     if (g_vcd_path) {
         g_ring_n = g_before;
@@ -472,6 +614,31 @@ void forcing_step(avr_t *avr)
         p->done = 1; p->done_cycle = avr->cycle; p->done_pc = avr->pc;
         g_forced_now = 1;
         trigger(avr);
+    }
+    for (int k = 0; k < g_npinat; k++) {   /* ucd-0d: --pin-at — a level forced onto a port pin, not a vector */
+        pinat_t *q = &g_pinat[k];
+        if (q->done || avr->cycle < q->cycle) continue;
+        avr_raise_irq(q->irq, (uint32_t)q->level);
+        q->done = 1; q->done_cycle = avr->cycle;
+        g_forced_now = 1;
+        trigger(avr);
+        printf("{\"t\":\"pin-at\",\"pin\":\"P%c%d\",\"level\":%d,\"cycle\":%llu}\n", q->port, q->bit, q->level, (unsigned long long)avr->cycle);
+        fflush(stdout);
+    }
+    for (int k = 0; k < g_nwire; k++) {    /* ucd-0d: did the firmware ALSO drive the wire's destination pin? */
+        wire_t *w = &g_wire[k];
+        if (!w->valid) continue;
+        uint16_t da = ddr_addr(w->dst_port);
+        int as_output = da ? ((avr->data[da] >> w->dst_bit) & 1u) : 0;
+        if (as_output && !w->conflict_warned) {
+            w->conflict_warned = 1;
+            w->conflict_seen = 1;
+            printf("{\"t\":\"wire-conflict\",\"src\":\"P%c%d\",\"dst\":\"P%c%d\",\"cycle\":%llu}\n",
+                   w->src_port, w->src_bit, w->dst_port, w->dst_bit, (unsigned long long)avr->cycle);
+            fflush(stdout);
+        } else if (!as_output) {
+            w->conflict_warned = 0;   /* the firmware let go of the pin again: re-arm, a later conflict still fires */
+        }
     }
     for (int k = 0; k < g_nirq; k++) {
         irq_at_t *q = &g_irq[k];
@@ -610,6 +777,24 @@ void forcing_finish(avr_t *avr, double wall_s)
                p->before, p->after);
     }
     printf("]");
+    if (g_npinat) {
+        printf(",\"pin_at\":[");
+        for (int k = 0; k < g_npinat; k++) {
+            pinat_t *q = &g_pinat[k];
+            printf("%s{\"pin\":\"P%c%d\",\"level\":%d,\"target_cycle\":%llu,\"fired\":%d,\"cycle\":%llu}",
+                   k ? "," : "", q->port, q->bit, q->level, (unsigned long long)q->cycle, q->done, (unsigned long long)q->done_cycle);
+        }
+        printf("]");
+    }
+    if (g_nwire) {
+        printf(",\"wire\":[");
+        for (int k = 0; k < g_nwire; k++) {
+            wire_t *w = &g_wire[k];
+            printf("%s{\"src\":\"P%c%d\",\"dst\":\"P%c%d\",\"edges\":%lu,\"conflict\":%s}",
+                   k ? "," : "", w->src_port, w->src_bit, w->dst_port, w->dst_bit, w->edges, w->conflict_seen ? "true" : "false");
+        }
+        printf("]");
+    }
     if (g_sp_watch) printf(",\"min_sp\":%u,\"stack_high_water_sp\":%u", g_min_sp, g_min_sp <= avr->ramend ? avr->ramend - g_min_sp : 0);
     if (g_fill_on) {
         uint32_t low = avr->ramend + 1u;
