@@ -29,7 +29,10 @@ import falcon
 ENGINES = {'avr-gcc': 'avr-gcc', 'avr-objcopy': 'avr-objcopy', 'avr-size': 'avr-size', 'avrdude': 'avrdude',
            'simavr': 'simavr', 'avr-twin': 'polari-avr-twin',
            # sc-0 (firmwarefaults): the disassembly + symbols a scenario resolves its PCs against, and the VCD reader
-           'avr-objdump': 'avr-objdump', 'avr-nm': 'avr-nm', 'vcd-window': 'polari-vcd-window'}
+           'avr-objdump': 'avr-objdump', 'avr-nm': 'avr-nm', 'vcd-window': 'polari-vcd-window',
+           # ucd-0f: the build systems — a project's `make` alone and the exported project's `cmake -P polari-build.cmake` (both
+           # ARGV-only with the project files round-tripped; the script's outputs land beside the inputs, so they come back)
+           'make': 'make', 'cmake': 'cmake'}
 VERSION_ARGS = {'avrdude': ['-?'], 'simavr': ['--list-cores'], 'avr-twin': None}
 #: the ceiling for ONE /run's outputs — files + stdout + stderr together (WORKER_MAX_MB, default 16 MB). Until sc-2 the
 #: worker kept only the last 20 000 characters of stdout/stderr, so `avr-objdump -d` of the UNO firmware (≈ 87 kB) lost
