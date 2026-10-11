@@ -241,6 +241,10 @@ sudo docker system prune -af --volumes</pre></li>
         listen 443 ssl;
         server_name api.prf.${LOCAL_IP}.nip.io;
 
+        # ucd-app (2026-10-11): the export upload door takes the demo bundle (~17 MB, the bridge jar inside) and the
+        # Hardware App's runtime deb (~55 MB); nginx's 1 MB default answered 413 to both.
+        client_max_body_size 200M;
+
         ssl_certificate /etc/nginx/certs/prf-proxy.crt;
         ssl_certificate_key /etc/nginx/certs/prf-proxy.key;
 
