@@ -253,7 +253,7 @@ MINIO_SERVER_URL=https://s3.prf.${LOCAL_IP}.nip.io
 # Hostname used by Keycloak itself (also drives configure_clients.sh redirect-URI derivation)
 KC_HOSTNAME=auth.prf.${LOCAL_IP}.nip.io
 
-# Public issuer URI (matches the `iss` claim in tokens — used by the backend
+# Public issuer URI (matches the 'iss' claim in tokens — used by the backend
 # to validate JWTs).
 POLARI_KEYCLOAK_ISSUER_URI=https://auth.prf.${LOCAL_IP}.nip.io/realms/Polari
 
