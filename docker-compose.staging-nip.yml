@@ -381,6 +381,10 @@ services:
       # installed apps can trust staging without OS-store surgery.
       # POLARI_SHELL_CA_PATH overrides; absence stays honest.
       - ./ca/root_ca.crt:/app/certs/root_ca.crt:ro
+    ports:
+      # The Java bridge's gRPC target (the Hardware App's polari-hw-bridge.jar dials <this host>:3002). Dev posture: the port
+      # is published on the host so a bridge on the same network can reach the backend; nothing in the stack depends on it.
+      - "3002:3002"
     deploy:
       placement:
         constraints:
