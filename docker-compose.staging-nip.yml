@@ -371,8 +371,12 @@ services:
       timeout: 10s
       # Grace sized for the MONOLITHIC fallback (cold seed ~10-15 min;
       # swarm KILLS tasks that outrun this). Lazy boots flip healthy at
-      # core-ready long before it matters.
-      start_period: 1800s
+      # core-ready long before it matters. 2026-10-17: measured 31 min
+      # on the econ-core test node (4 cores, the backend CPU cap; ~20 min
+      # of it restores ~10k persisted rows) — past 1800s, compose marked
+      # the backend unhealthy and never started the proxy. A longer grace
+      # costs nothing: the check passes the moment /api/health answers.
+      start_period: 3600s
       retries: 5
     volumes:
       - backend-data:/app/data
