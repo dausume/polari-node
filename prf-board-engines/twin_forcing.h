@@ -32,6 +32,8 @@ void forcing_step(avr_t *avr);
 void forcing_uart_byte(uint8_t b);
 /* sc-2: one byte as the HOST sees it (uart-out, the TX log, the responder) — after the --drop-frame tx: filter */
 void forcing_uart_emit(uint8_t b, uint64_t cycle);
+/* sim-0: "PD2" → that pin's ioport irq (what --pin-at raises), NULL when it is not a pin of this mcu */
+struct avr_irq_t *forcing_pin_irq(avr_t *avr, const char *spec);
 /* at exit: the VCD window and the final {"t":"scenario", ...} JSON line */
 void forcing_finish(avr_t *avr, double wall_s);
 

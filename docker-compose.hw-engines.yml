@@ -63,6 +63,12 @@ services:
       - polari-link
     ports:
       - "9830:9830"
+      # sim-0: twin SESSIONS (a tcp + a ctl port each) = 9832-9863 minus the ports the other workers below publish
+      # (9840 formal, 9850 esp, 9860 pcb) - the worker allocates from the same set (SESSION_PORTS_RESERVED)
+      - "9832-9839:9832-9839"
+      - "9841-9849:9841-9849"
+      - "9851-9859:9851-9859"
+      - "9861-9863:9861-9863"
     mem_limit: 512m
     deploy:
       placement:

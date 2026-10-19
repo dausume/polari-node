@@ -244,6 +244,16 @@ static int parse_pin_spec(const char *s, char *port, int *bit)
     return 0;
 }
 
+/* sim-0: a pin spec ("PD2") → its ioport pin irq, or NULL (not B/C/D 0..7, or the mcu has no such port): the control
+ * channel's "set" and "watch" use the same irq --pin-at raises */
+struct avr_irq_t *forcing_pin_irq(avr_t *avr, const char *spec)
+{
+    char port;
+    int bit;
+    if (parse_pin_spec(spec, &port, &bit) < 0) return NULL;
+    return port_irq(avr, port, bit);
+}
+
 static int parse_pinat(const char *s, pinat_t *q)
 {
     char buf[128];

@@ -23,6 +23,8 @@
  * tx/rx logs) and the power rail (--reset-at, --jump-at, EEPROM set/dump), all in cycles; reached through forcing_*().
  *
  * C only (RULE 2 is about the device side; this is the simulator, written in the same language as simavr itself).
+ * sim-0 (HARDWARE_BENCH_CONVERGENCE_PLAN.md §8): --ctl PORT [--ctl-token T] — a live CONTROL channel (twin_ctl.c, JSON lines): set a
+ * pin level, hold an ADC channel, watch pins (edges come back as events), pause/resume, status, reset. One client at a time.
  * Output: JSON lines on stdout ({"t":"ready"|"status"|"pb5"|"bench"|"state"|"exit", ...}).
  */
 #include <errno.h>
@@ -48,6 +50,7 @@
 #include <avr_adc.h>
 #include <avr_ioport.h>
 
+#include "twin_ctl.h"
 #include "twin_forcing.h"
 
 #define OCR0A_ADDR 0x47u   /* ATmega328P data-space address of OCR0A (I/O 0x27 + 0x20) */
@@ -63,6 +66,10 @@ static size_t g_rx_head, g_rx_len;
 static int g_xon = 1;
 static unsigned long g_uart_tx, g_uart_rx, g_tx_dropped, g_pb5_edges;
 static int g_pb5 = -1;
+static double g_wall0;                 /* wall clock at sim time zero (shifted while paused) */
+static uint32_t g_adc_mv[6];           /* what each ADC channel is held at (channel 0 follows the ramp) */
+static uint32_t g_ramp_ms, g_ramp_lo, g_ramp_hi;   /* --adc0-ramp; a control "adc 0" ends it */
+static int g_ctl_port;
 
 static void on_sig(int s) { (void)s; g_run = 0; }
 
@@ -156,32 +163,50 @@ static long peak_rss_kb(void)
     return r.ru_maxrss;
 }
 
-static void status(const char *t, uint32_t adc_mv, double wall0)
+static void status_json(char *buf, size_t n, const char *t)
 {
-    double w = now_s() - wall0;
-    printf("{\"t\":\"%s\",\"cycle\":%llu,\"sim_ms\":%.1f,\"wall_s\":%.3f,\"pb5\":%d,\"pb5_edges\":%lu,\"ocr0a\":%u,"
-           "\"adc0_mv\":%u,\"uart_tx_bytes\":%lu,\"uart_rx_bytes\":%lu,\"tx_dropped\":%lu,\"client\":%d,\"peak_rss_kb\":%ld}\n",
-           t, (unsigned long long)g_avr->cycle, sim_ms(), w, g_pb5, g_pb5_edges, (unsigned)g_avr->data[OCR0A_ADDR],
-           adc_mv, g_uart_tx, g_uart_rx, g_tx_dropped, g_client >= 0, peak_rss_kb());
+    double w = now_s() - g_wall0;
+    snprintf(buf, n, "{\"t\":\"%s\",\"cycle\":%llu,\"sim_ms\":%.1f,\"wall_s\":%.3f,\"pb5\":%d,\"pb5_edges\":%lu,\"ocr0a\":%u,"
+             "\"adc0_mv\":%u,\"adc_mv\":[%u,%u,%u,%u,%u,%u],\"uart_tx_bytes\":%lu,\"uart_rx_bytes\":%lu,\"tx_dropped\":%lu,"
+             "\"client\":%d,\"ctl\":%d,\"paused\":%d,\"ctl_dropped\":%lu,\"peak_rss_kb\":%ld}",
+             t, (unsigned long long)g_avr->cycle, sim_ms(), w, g_pb5, g_pb5_edges, (unsigned)g_avr->data[OCR0A_ADDR],
+             g_adc_mv[0], g_adc_mv[0], g_adc_mv[1], g_adc_mv[2], g_adc_mv[3], g_adc_mv[4], g_adc_mv[5], g_uart_tx, g_uart_rx,
+             g_tx_dropped, g_client >= 0, ctl_attached(), ctl_paused(), ctl_dropped(), peak_rss_kb());
+}
+
+static void status(const char *t)
+{
+    char b[768];
+    status_json(b, sizeof b, t);
+    puts(b);
     fflush(stdout);
+}
+
+static void ctl_status(char *buf, size_t n) { status_json(buf, n, "status"); }
+
+static void ctl_set_adc(unsigned ch, uint32_t mv)
+{
+    if (ch == 0) g_ramp_ms = 0;   /* a held value replaces the ramp */
+    g_adc_mv[ch] = mv;
+    avr_raise_irq(avr_io_getirq(g_avr, AVR_IOCTL_ADC_GETIRQ, ADC_IRQ_ADC0 + ch), mv);
 }
 
 static void usage(void)
 {
     fprintf(stderr, "usage: polari-avr-twin --hex FW.hex [--mcu atmega328p] [--freq 16000000] [--tcp PORT]\n"
                     "       [--adc0-mv MV | --adc0-ramp LO,HI,PERIOD_MS] [--adc-mv CH=MV ...] [--free] [--status-ms MS] [--seconds S]\n"
-                    "       [--bench CYCLES] [--state-size]\n%s", forcing_usage());
+                    "       [--bench CYCLES] [--state-size]\n       [--ctl PORT [--ctl-token T]]   (sim-0: live control channel, JSON lines; token also from POLARI_TWIN_CTL_TOKEN)\n%s", forcing_usage());
 }
 
 int main(int argc, char **argv)
 {
     const char *hex = NULL, *mcu = "atmega328p";
-    uint32_t freq = 16000000u, adc_mv = 750u, ramp_lo = 0, ramp_hi = 0, ramp_ms = 0, status_ms = 1000u;
+    uint32_t freq = 16000000u, adc_mv = 750u, status_ms = 1000u;
+    const char *ctl_token = getenv("POLARI_TWIN_CTL_TOKEN");
     int port = 0, realtime = 1, state_size = 0;
     unsigned long long bench = 0;
     double seconds = 0;
-    uint32_t adc_ch_mv[6] = { 0 };   /* brd-fi: ADC1..ADC5 (index = channel; ADC0 has its own flags) */
-    int adc_ch_set[6] = { 0 };
+    int adc_ch_set[6] = { 0 };   /* brd-fi: ADC1..ADC5 (index = channel; ADC0 has its own flags); values live in g_adc_mv */
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--hex") && i + 1 < argc) hex = argv[++i];
         else if (!strcmp(argv[i], "--mcu") && i + 1 < argc) mcu = argv[++i];
@@ -189,14 +214,16 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--tcp") && i + 1 < argc) port = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--adc0-mv") && i + 1 < argc) adc_mv = (uint32_t)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--adc0-ramp") && i + 1 < argc) {
-            if (sscanf(argv[++i], "%u,%u,%u", &ramp_lo, &ramp_hi, &ramp_ms) != 3 || !ramp_ms) { usage(); return 2; }
+            if (sscanf(argv[++i], "%u,%u,%u", &g_ramp_lo, &g_ramp_hi, &g_ramp_ms) != 3 || !g_ramp_ms) { usage(); return 2; }
         }
         else if (!strcmp(argv[i], "--adc-mv") && i + 1 < argc) {
             unsigned ch = 0, mv = 0;
             if (sscanf(argv[++i], "%u=%u", &ch, &mv) != 2 || ch < 1u || ch > 5u) { usage(); return 2; }
-            adc_ch_mv[ch] = mv;
+            g_adc_mv[ch] = mv;
             adc_ch_set[ch] = 1;
         }
+        else if (!strcmp(argv[i], "--ctl") && i + 1 < argc) g_ctl_port = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--ctl-token") && i + 1 < argc) ctl_token = argv[++i];
         else if (!strcmp(argv[i], "--free")) realtime = 0;
         else if (!strcmp(argv[i], "--status-ms") && i + 1 < argc) status_ms = (uint32_t)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = atof(argv[++i]);
@@ -254,19 +281,20 @@ int main(int argc, char **argv)
     avr_irq_t *uart_in = avr_io_getirq(g_avr, AVR_IOCTL_UART_GETIRQ('0'), UART_IRQ_INPUT);
     avr_irq_t *adc0 = avr_io_getirq(g_avr, AVR_IOCTL_ADC_GETIRQ, ADC_IRQ_ADC0);
     avr_irq_register_notify(avr_io_getirq(g_avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 5), pb5, NULL);
-    avr_raise_irq(adc0, ramp_ms ? ramp_lo : adc_mv);
+    g_adc_mv[0] = g_ramp_ms ? g_ramp_lo : adc_mv;
+    avr_raise_irq(adc0, g_adc_mv[0]);
     for (unsigned ch = 1u; ch <= 5u; ch++)
-        if (adc_ch_set[ch]) avr_raise_irq(avr_io_getirq(g_avr, AVR_IOCTL_ADC_GETIRQ, ADC_IRQ_ADC0 + ch), adc_ch_mv[ch]);
+        if (adc_ch_set[ch]) avr_raise_irq(avr_io_getirq(g_avr, AVR_IOCTL_ADC_GETIRQ, ADC_IRQ_ADC0 + ch), g_adc_mv[ch]);
 
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
     signal(SIGPIPE, SIG_IGN);
 
-    double wall0 = now_s();
+    g_wall0 = now_s();
     if (bench) {
         int st = cpu_Running;
         while (g_avr->cycle < bench && st != cpu_Done && st != cpu_Crashed && g_run) st = avr_run(g_avr);
-        double w = now_s() - wall0;
+        double w = now_s() - g_wall0;
         printf("{\"t\":\"bench\",\"cycles\":%llu,\"wall_s\":%.4f,\"cycles_per_s\":%.0f,\"realtime_factor\":%.3f,"
                "\"uart_tx_bytes\":%lu,\"peak_rss_kb\":%ld}\n",
                (unsigned long long)g_avr->cycle, w, (double)g_avr->cycle / w, (double)g_avr->cycle / w / (double)freq,
@@ -277,22 +305,34 @@ int main(int argc, char **argv)
         g_listen = listen_tcp(port);
         if (g_listen < 0) { fprintf(stderr, "cannot listen on tcp %d: %s\n", port, strerror(errno)); return 1; }
     }
-    printf("{\"t\":\"ready\",\"mcu\":\"%s\",\"freq\":%u,\"hex\":\"%s\",\"flash_bytes_loaded\":%u,\"tcp\":%d,\"realtime\":%d,"
-           "\"adc0\":\"%s\",\"adc1_mv\":%u,\"adc2_mv\":%u}\n", mcu, freq, hex, f.flashsize, port, realtime, ramp_ms ? "ramp" : "fixed",
-           adc_ch_mv[1], adc_ch_mv[2]);
+    ctl_host_t host = { g_avr, mcu, ctl_status, ctl_set_adc };
+    if (g_ctl_port && ctl_listen(g_ctl_port, ctl_token) < 0) { fprintf(stderr, "cannot listen on ctl %d: %s\n", g_ctl_port, strerror(errno)); return 1; }
+    printf("{\"t\":\"ready\",\"mcu\":\"%s\",\"freq\":%u,\"hex\":\"%s\",\"flash_bytes_loaded\":%u,\"tcp\":%d,\"ctl\":%d,\"realtime\":%d,"
+           "\"adc0\":\"%s\",\"adc1_mv\":%u,\"adc2_mv\":%u}\n", mcu, freq, hex, f.flashsize, port, g_ctl_port, realtime, g_ramp_ms ? "ramp" : "fixed",
+           g_adc_mv[1], g_adc_mv[2]);
     fflush(stdout);
 
     const avr_cycle_count_t poll_every = freq / 10000u;          /* 100 us of sim time */
     const avr_cycle_count_t byte_cycles = (avr_cycle_count_t)freq * 10u / 115200u;
     avr_cycle_count_t next_poll = 0, next_feed = 0, next_status = (avr_cycle_count_t)freq / 1000u * status_ms;
-    uint32_t cur_mv = ramp_ms ? ramp_lo : adc_mv;
+    double pause_from = 0;
     int st = cpu_Running;
     while (g_run && st != cpu_Done && st != cpu_Crashed) {
+        if (g_ctl_port && ctl_paused()) {   /* stepping stopped; the channels stay served; the wall clock is shifted back on resume */
+            struct timespec pt = { 0, 2000000L };
+            if (pause_from == 0) pause_from = now_s();
+            poll_tcp();
+            ctl_poll(&host);
+            nanosleep(&pt, NULL);
+            continue;
+        }
+        if (pause_from != 0) { g_wall0 += now_s() - pause_from; pause_from = 0; }
         st = avr_run(g_avr);
         if (forcing) forcing_step(g_avr);
         if (g_avr->cycle < next_poll) continue;
         next_poll = g_avr->cycle + poll_every;
         poll_tcp();
+        if (g_ctl_port) ctl_poll(&host);
         if (g_rx_len && g_xon && g_avr->cycle >= next_feed) {
             avr_raise_irq(uart_in, g_rx[g_rx_head]);
             g_rx_head = (g_rx_head + 1) % TXBUF;
@@ -300,14 +340,14 @@ int main(int argc, char **argv)
             g_uart_rx++;
             next_feed = g_avr->cycle + byte_cycles;
         }
-        if (ramp_ms) {   /* triangle lo → hi → lo over period_ms of SIM time */
-            uint32_t ms = (uint32_t)(sim_ms()) % ramp_ms, half = ramp_ms / 2u;
-            uint32_t span = ramp_hi > ramp_lo ? ramp_hi - ramp_lo : 0u;
-            uint32_t mv = ramp_lo + (uint32_t)((uint64_t)span * (ms < half ? ms : ramp_ms - ms) / (half ? half : 1u));
-            if (mv != cur_mv) { cur_mv = mv; avr_raise_irq(adc0, mv); }
+        if (g_ramp_ms) {   /* triangle lo → hi → lo over period_ms of SIM time */
+            uint32_t ms = (uint32_t)(sim_ms()) % g_ramp_ms, half = g_ramp_ms / 2u;
+            uint32_t span = g_ramp_hi > g_ramp_lo ? g_ramp_hi - g_ramp_lo : 0u;
+            uint32_t mv = g_ramp_lo + (uint32_t)((uint64_t)span * (ms < half ? ms : g_ramp_ms - ms) / (half ? half : 1u));
+            if (mv != g_adc_mv[0]) { g_adc_mv[0] = mv; avr_raise_irq(adc0, mv); }
         }
         if (realtime) {
-            double ahead = sim_ms() / 1000.0 - (now_s() - wall0);
+            double ahead = sim_ms() / 1000.0 - (now_s() - g_wall0);
             if (ahead > 0.002) {
                 struct timespec t = { 0, (long)(ahead * 1e9) };
                 nanosleep(&t, NULL);
@@ -315,13 +355,14 @@ int main(int argc, char **argv)
         }
         if (status_ms && g_avr->cycle >= next_status) {
             next_status += (avr_cycle_count_t)freq / 1000u * status_ms;
-            status("status", cur_mv, wall0);
+            status("status");
         }
         if (seconds > 0 && sim_ms() >= seconds * 1000.0) break;
     }
-    status("exit", cur_mv, wall0);
-    if (forcing) forcing_finish(g_avr, now_s() - wall0);
+    status("exit");
+    if (forcing) forcing_finish(g_avr, now_s() - g_wall0);
     if (g_client >= 0) close(g_client);
     if (g_listen >= 0) close(g_listen);
+    ctl_close();
     return st == cpu_Crashed ? 3 : 0;
 }

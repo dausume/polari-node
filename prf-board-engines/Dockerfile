@@ -27,8 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev l
 # sc-0: pyvcd pinned by sha256 (pip --require-hashes refuses anything else)
 RUN printf 'pyvcd==0.5.0 --hash=sha256:dec595b73328a198ccb9981c6a9e9cd09b3c9b60cd42fba12105db9c41ce894d\n' > /tmp/req.txt \
     && python3 -m pip install --no-deps --require-hashes --no-compile --target /opt/pyvcd -r /tmp/req.txt
-COPY polari_avr_twin.c twin_forcing.c twin_forcing.h twin_scenario_io.c twin_scenario_io.h /src/
-RUN gcc -O2 -Wall -Wextra -o /src/polari-avr-twin /src/polari_avr_twin.c /src/twin_forcing.c /src/twin_scenario_io.c -I/usr/include/simavr -lsimavr -lelf -lm
+COPY polari_avr_twin.c twin_forcing.c twin_forcing.h twin_scenario_io.c twin_scenario_io.h twin_ctl.c twin_ctl.h /src/
+RUN gcc -O2 -Wall -Wextra -o /src/polari-avr-twin /src/polari_avr_twin.c /src/twin_forcing.c /src/twin_scenario_io.c /src/twin_ctl.c -I/usr/include/simavr -lsimavr -lelf -lm
 
 FROM ${BASE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -38,10 +38,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=twin-build /src/polari-avr-twin /usr/local/bin/polari-avr-twin
 COPY --from=twin-build /opt/pyvcd/ /usr/lib/python3/dist-packages/
 COPY polari_vcd_window.py /usr/local/bin/polari-vcd-window
-COPY board_engines_service.py /srv/board_engines_service.py
+COPY board_engines_service.py board_sessions.py /srv/
 COPY cost.json /srv/cost.json
-RUN useradd -m -u 1000 worker && avr-gcc --version | head -1 && polari-avr-twin 2>&1 | head -1 || true
+RUN useradd -m -u 1000 worker && mkdir -p /srv/sessions && chown worker /srv/sessions && avr-gcc --version | head -1 && polari-avr-twin 2>&1 | head -1 || true
 USER worker
 WORKDIR /w
-EXPOSE 9830 9831
+# sim-0: 9832-9863 = twin sessions (a tcp + a ctl port each; 9840/9850/9860 stay with the other hw-engines workers)
+EXPOSE 9830 9831 9832-9863
 CMD ["gunicorn", "-b", "0.0.0.0:9830", "-w", "1", "-t", "600", "--chdir", "/srv", "board_engines_service:app"]

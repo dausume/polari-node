@@ -60,3 +60,11 @@ which cut `avr-objdump -d` of the UNO firmware (≈ 87 kB) and made scenario 1 "
 free-running speed unchanged (84–86 M cycles/s), 10 s with the sc-1 per-instruction step 2.83 s (+48 % vs free). **sc-2:** 534 811 269 B
 (+6.6 KB), no-cache build 69.4 s, 83.8–84.5 M cycles/s, 10 s with the step 2.82 s (unchanged). Full ledgers:
 `polari-framework/modules/board/COST.md`, `polari-framework/modules/firmwarefaults/COST.md`.
+
+**Twin SESSIONS (sim-0, `AI-Notes/plans/HARDWARE_BENCH_CONVERGENCE_PLAN.md` section 8):** `polari-avr-twin --ctl PORT [--ctl-token T]` (`twin_ctl.c`) adds a second
+listener polled in the same loop as the USART port: JSON lines in (`{"token":"T"}` first when a token is set, `{"set":"PD2","level":0}` (the `--pin-at` irq),
+`{"adc":0,"mv":750}`, `{"watch":["PD6","PB5"]}`, `{"run":false}`, `{"status":1}`, `{"reset":1}` (`avr_reset`)) and out (`{"t":"ack"|"pin"|"status"|"refused",...}`; a pin
+the chip lacks is refused in words); one client at a time. The worker (`board_sessions.py`) runs it DETACHED: `POST /sessions {hex_b64, board, mcu, freq, ttl_s, token,
+owner, free}` -> ports from 9832-9863 (minus the other hw-engines workers' 9840/9850/9860), state under `/srv/sessions/`, `GET /sessions`, `GET|DELETE /sessions/{id}`, a TTL
+reaper on every request and every 5 s, the token passed to the twin by environment. `GET /capability` has a `sessions` block. Measured cost: `polari-framework/modules/board/COST.md` (sim-0).
+

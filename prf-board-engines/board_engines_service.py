@@ -11,9 +11,11 @@ binary → this image on the local docker → the topology provider → refusal.
                      -> {ok, engine, returncode, stdout, stderr, files, files_b64, cost}
                      ARGV ONLY, no shell; `engine` must be in ENGINES; args are basenames inside the job dir.
 
+  GET/POST /sessions, GET/DELETE /sessions/{id}   sim-0: DETACHED twin sessions with a live control port (board_sessions.py)
+
 A FLASH never runs through this API (the USB port is on the host that holds the board — plan §2; the framework
 refuses a remote flash before it gets here). The twin needs a long-lived TCP port, so it runs as its own container
-of this image (`pol board twin uno up`), not through /run.
+of this image (`pol board twin uno up`), or as a session of this worker (/sessions), not through /run.
 """
 import base64
 import json
@@ -25,6 +27,8 @@ import tempfile
 import time
 
 import falcon
+
+import board_sessions
 
 ENGINES = {'avr-gcc': 'avr-gcc', 'avr-objcopy': 'avr-objcopy', 'avr-size': 'avr-size', 'avrdude': 'avrdude',
            'simavr': 'simavr', 'avr-twin': 'polari-avr-twin',
@@ -92,6 +96,7 @@ class Capability:
     def on_get(self, req, resp):
         resp.media = {'worker': 'board-engines', 'resources': _resources_block(),
                       'engines': {e: {'available': bool(shutil.which(b)), 'version': _version(e), 'binary': b} for e, b in ENGINES.items()},
+                      'sessions': board_sessions.info(),
                       'protocol': 'POST /run {engine, args, files, files_b64, timeout} — argv only, files round-trip; never a flash'}
 
 
@@ -169,7 +174,8 @@ class Run:
             shutil.rmtree(work, ignore_errors=True)
 
 
-app = falcon.App()
+app = falcon.App(middleware=[board_sessions.Reaper()])
 app.add_route('/capability', Capability())
 app.add_route('/system-info', SystemInfo())
 app.add_route('/run', Run())
+board_sessions.add_routes(app)
