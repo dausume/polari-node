@@ -21,6 +21,17 @@ Base: `ubuntu:24.04@sha256:a853f94d226358a79c740cfc7bce0c289748f3fe3488d921d038c
     docker compose -p esp-engines -f ../docker-compose.esp-engines.yml build     # the image (enough for a local device)
     docker compose -p esp-engines -f ../docker-compose.esp-engines.yml up -d     # the worker on :9850, for other devices
 
+## Host-driven runs (smp S5, the light Mission on the C3 twin)
+
+`polari-c3-run` also takes `--rx-plan FILE` and `--boots N` (the other options are unchanged, so the sc-3 scenario runs are byte-for-byte as before):
+- `--rx-plan`: UART0 becomes a TCP socket the engine owns (QEMU waits for it before it starts) and the plan's files are written to UART0 RX, each once `count` trace lines starting with
+  `after` (the firmware's own `@TEL n`, one per telemetry frame) have appeared since the previous step. The pace is the firmware's VIRTUAL time: under `-icount ...,sleep=off` idle time
+  warps (a 1.15 s run takes about 0.6-0.9 s of wall time), so a wall-clock pace would race the guest.
+- `--boots N`: N boots on the same flash copy (a power cycle each; NVS survives). `trace.log` carries `@POWER-CYCLE n` between them.
+- What the machine does NOT model: `esp32c3.gpio` is a register stub (measured 2026-10-19 with `gpio_set_level`/`gpio_get_level` under `-monitor`: `GPIO_OUT` stays 0, `GPIO_IN`
+  never moves, `qom-tree` shows no pin lines, one `sysbus-irq`). A button or an LED level cannot be reached from outside, so the light firmware keeps its pins in a RAM shim on the twin
+  (`board/custom/firmware/esp32c3/apps/light_hal.h`, `PIN_SHIM=1`). That is a twin result, not a chip result.
+
 ## Why not `FROM espressif/idf:v5.5.5`
 
 That image installs every target. Docker Hub lists it at **5 116 MB compressed** (amd64, measured 2026-10-02) and more than
