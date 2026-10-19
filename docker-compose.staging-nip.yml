@@ -339,6 +339,7 @@ services:
       - ESP_ENGINES_URL=${ESP_ENGINES_URL:-}       # sc-3: the board ESP32-C3 family worker (prf-esp-engines, :9850); unset = the local idf toolchain, the local pinned image, the topology provider board.esp-engines, or an honest refusal
       - FORMAL_ENGINES_URL=${FORMAL_ENGINES_URL:-} # sc-2b/sc-2c: the firmware formal + static engines worker (prf-formal-engines, :9840); unset = a local binary, the local pinned image, the topology provider firmwarefaults.formal, or an honest refusal
       - PCB_ENGINES_URL=${PCB_ENGINES_URL:-}       # pcb-0: the PCB engines worker (prf-pcb-engines, :9860, kicad-cli); unset = a local kicad-cli binary, the local pinned image, the topology provider pcb.engines, or an honest refusal
+      - BRIDGE_ENGINES_URL=${BRIDGE_ENGINES_URL:-} # sim-2: the hosted bridge worker (prf-bridge-engines, :9870, java + mvn); unset = the topology provider grpcbridge.engines, or an honest refusal
       # mtg-2: the meeting media server (pol-livekit, `pol compose
       # livekit up`). LIVEKIT_KEYS must MATCH that service's generated
       # livekit/keys.env or every minted token is garbage; the file is

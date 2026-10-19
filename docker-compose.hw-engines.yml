@@ -24,6 +24,7 @@
 #         --constraint formal-engines="node.labels.polari.machine==isle-core" \
 #         --constraint esp-engines="node.labels.polari.machine==isle-core" \
 #         --constraint pcb-engines="node.labels.polari.machine==isle-core" \
+#         --constraint bridge-engines="node.labels.polari.machine==isle-core" \
 #     | docker stack deploy -c - polari-hw-engines
 #
 # Image provenance / distribution (owed, D-frg-3): these four images were
@@ -130,6 +131,26 @@ services:
           # isle-core = the hardware-integration core (nodes.yml mandate);
           # `pol allocate pcb.engines <machine>` rewrites this via
           # POL_STACK_CONSTRAINTS once a 'hw-engines' swarm role exists.
+          - node.labels.polari.machine == isle-core
+      resources:
+        limits:
+          memory: 1024M
+
+  # sim-2: the HOSTED BRIDGE worker - the generated Java bridge, built (mvn, offline from the image's warmed repository) and run beside a twin session
+  # (source=twin-tcp). Image built ON isle-core only: prf-bridge-engines/build.sh. One published port; the bridges themselves listen on nothing (they
+  # connect OUT to the session's USART port and to the backend's gRPC port).
+  bridge-engines:
+    image: prf-bridge-engines:trixie
+    container_name: prf-bridge-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9870:9870"
+    mem_limit: 1024m
+    deploy:
+      placement:
+        constraints:
           - node.labels.polari.machine == isle-core
       resources:
         limits:
