@@ -1,0 +1,34 @@
+{
+ "imageMb": 177.8,
+ "ramMb": 48,
+ "fidelity": "measured",
+ "measuredAt": "2026-10-26",
+ "host": "pol-core (Intel Core i5-4590 @ 3.30 GHz, 4 cpus, 16 GB, kernel 6.8)",
+ "image": {
+  "bytes": 177825917,
+  "id": "see `docker image inspect prf-scope-engines:trixie` - this file is a layer of the image, so the final id cannot be written into it (the build before it was added: sha256:20e3e43c...)",
+  "build_wall_s": 20.1,
+  "base": "debian:trixie-slim@sha256:a99cfc51... (local)",
+  "packages": "python3 3.13.5, python3-numpy, python3-falcon, gunicorn (Debian 13)"
+ },
+ "worker": {
+  "idle_rss_mb": 41.1,
+  "after_capture_rss_mb": 55.3,
+  "docker_stats_mib": 48.2,
+  "source": "GET /system-info + docker stats in the running container, one emulator started, one 4-channel x 250k capture"
+ },
+ "capture": {
+  "4ch_x_250k_wall_s_container": 0.384,
+  "4ch_x_250k_wall_s_inprocess": 0.454,
+  "4ch_x_1M_wall_s_inprocess": 1.001,
+  "acquire_4ch_x_250k_s": 0.026,
+  "acquire_4ch_x_1M_s": 0.159,
+  "bytes_4ch_x_250k": 2000000,
+  "bytes_4ch_x_1M": 8000000,
+  "inprocess_peak_rss_mb_250k": 45.6,
+  "inprocess_peak_rss_mb_1M": 87.7,
+  "inprocess_rss_mb_start": 28.7,
+  "source": "scratch measure (Emulator on a loopback port + ScopeClient.capture over the raw socket; WORD format), 2026-10-26"
+ },
+ "note": "osc-5 (OSCILLOSCOPE_PLAN.md \u00a73f): MEASURED - modules/instruments/COST.md. Memory grows ~8 MB per 1 M samples held (int64 working arrays in numpy); mem_limit 256m covers the 5 Mpts x 4 channel maximum of the profile with the arrays alive (~160 MB) - a full-depth 4-channel acquisition is the knob to watch."
+}

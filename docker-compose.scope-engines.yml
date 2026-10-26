@@ -1,0 +1,37 @@
+# ==============================================================================
+# docker-compose.scope-engines.yml — the oscilloscope emulator worker (prf-scope-engines)
+# ==============================================================================
+# osc-5 (AI-Notes/plans/OSCILLOSCOPE_PLAN.md §3f): the DHO804 emulator of
+# modules/instruments (vendored by prf-scope-engines/build.sh) behind one JSON
+# control API (:9880) and five raw SCPI sockets (:5555-:5559, one per emulated
+# instrument), so an isle node reaches an emulated scope by address and port
+# exactly as it would a real one. Mirrors board-engines: the framework resolves
+# it through modules/instruments/custom/scope_engines.py — SCOPE_ENGINES_URL
+# knob wins; else the `scope` EngineProviderBinding row (written by
+# `isle app deploy … --engine scope`); else the emulator runs in-process.
+#
+#   prf-scope-engines/build.sh                                                  # stages vendor/ + builds the image
+#   docker compose -p scope-engines -f docker-compose.scope-engines.yml up -d   # the worker, for other devices
+# ==============================================================================
+
+networks:
+  polari-link:
+    external: true
+
+services:
+  scope-engines:
+    build:
+      context: ./prf-scope-engines
+    image: prf-scope-engines:trixie
+    container_name: prf-scope-engines
+    restart: unless-stopped
+    networks:
+      - polari-link
+    ports:
+      - "9880:9880"
+      - "5555-5559:5555-5559"
+    mem_limit: 256m
+    environment:
+      SCOPE_SCPI_HOST: "0.0.0.0"
+      SCOPE_SCPI_PORT_FIRST: "5555"
+      SCOPE_SCPI_PORTS: "5"
