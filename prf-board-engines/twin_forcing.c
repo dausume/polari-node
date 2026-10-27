@@ -27,6 +27,12 @@
  *   --ret-hist VEC:FILE         every time vector VEC is taken, count its return address (the main-loop PC it
  *                               interrupted) — "pc count" lines: the PHASE of that interrupt against the loop
  *   --ret-log VEC:FILE          the same, one line per time taken: "cycle return_pc first_watch_word" (which tick landed where)
+ * ipb-7:
+ *   --masked-windows            MASKED WINDOWS: every stretch of main-line code run with SREG.I cleared (cli … sei / the SREG restore of an
+ *                               ATOMIC_BLOCK), OUTSIDE interrupt handlers (an ISR runs with I cleared by the hardware: that is its length,
+ *                               measured by --isr-latency, not a window). Armed by the FIRST sei (reset → main's sei is initialisation, not
+ *                               a critical section). Per opening pc (the cli's address): n / min / max; overall n / min / max / mean and the
+ *                               pc of the longest: "masked_windows". A window still open at exit is reported as such.
  * sc-2:
  *   --align-at-pc pc=0xADDR,vec=N[,when=…]   like --irq-at pc=, but WITHOUT the extra tick: the vector is serviced at that PC
  *                               (the same PC-equality service) and the NEXT genuine raise of that vector is swallowed
@@ -171,6 +177,12 @@ static uint32_t g_fn_start, g_fn_end;
 static uint64_t g_fn_t0, g_fn_min = UINT64_MAX, g_fn_max, g_fn_n;
 static int g_fn_in, g_fn_by_sp;
 static uint16_t g_fn_sp;
+/* ipb-7: masked windows (SREG.I cleared in main-line code, outside ISRs) */
+#define MAX_MASK_SITES 64
+static int g_mask_on, g_mask_armed, g_mask_in, g_nmask_site, g_mask_sites_overflow;
+static uint64_t g_mask_t0, g_mask_n, g_mask_min = UINT64_MAX, g_mask_max, g_mask_sum;
+static uint32_t g_mask_pc0, g_mask_max_pc, g_mask_last_pc;
+static struct { uint32_t pc; uint64_t n, min, max; } g_mask_site[MAX_MASK_SITES];
 static unsigned long long g_seed;
 static int g_active;
 static FILE *g_uart_f;
@@ -371,6 +383,7 @@ int forcing_parse_arg(int argc, char **argv, int *i)
     }
     if (!strcmp(a, "--sp-watch")) { g_sp_watch = 1; g_active = 1; return 1; }
     if (!strcmp(a, "--isr-latency")) { g_isr_lat = 1; g_active = 1; return 1; }
+    if (!strcmp(a, "--masked-windows")) { g_mask_on = 1; g_active = 1; return 1; }
     if (!strcmp(a, "--stack-fill") && v) { g_fill_on = 1; g_fill_from = (uint16_t)strtoul(v, NULL, 0); (*i)++; g_active = 1; return 1; }
     if (!strcmp(a, "--fn-cycles") && v) {
         unsigned s = 0, e = 0;
@@ -411,7 +424,7 @@ const char *forcing_usage(void)
     snprintf(buf, sizeof buf, "       scenario (sc-0): [--irq-at pc=0xADDR,vec=N[,when=0xADDR/W&0xMASK=0xVAL][,shots=K] | --irq-at cycle=N,vec=V]\n"
            "       [--poke 0xADDR[/W]=0xVAL@CYCLE] [--watch 0xADDR/W[=name]] [--trace-vcd FILE [--trace-window B:A]] [--sp-watch]\n"
            "       [--stack-fill 0xBSS_END] [--isr-latency] [--fn-cycles 0xSTART:0xEND] [--uart-out FILE] [--seed N] [--list-vectors]\n"
-           "       [--ret-hist VEC:FILE] [--ret-log VEC:FILE]\n"
+           "       [--ret-hist VEC:FILE] [--ret-log VEC:FILE] [--masked-windows]\n"
            "       scenario (sc-2): [--align-at-pc pc=0xADDR,vec=N[,when=...]] [--flip-bit 0xADDR:BIT@CYCLE]\n"
            "       ucd-0d: [--pin-at cycle=N,pin=PDn,level=0|1] [--wire PSRCn:PDSTn]\n%s", sio_usage());
     return buf;
@@ -705,6 +718,28 @@ void forcing_step(avr_t *avr)
             g_fn_in = 0;
         }
     }
+    if (g_mask_on) {                      /* ipb-7: sampled AFTER the instruction (avr->pc = the next one; g_mask_last_pc = the one just run) */
+        int i = avr->sreg[S_I], in_isr = running_vec(avr) != 0;
+        if (!g_mask_armed) {
+            if (i) g_mask_armed = 1;      /* the first sei: from here on a cleared I in main-line code is a critical section */
+        } else if (!g_mask_in) {
+            if (!i && !in_isr) { g_mask_in = 1; g_mask_t0 = avr->cycle; g_mask_pc0 = g_mask_last_pc; }
+        } else if (i) {                   /* sei, or the SREG restore that ends an ATOMIC_BLOCK */
+            uint64_t d = avr->cycle - g_mask_t0;
+            int k;
+            if (d < g_mask_min) g_mask_min = d;
+            if (d > g_mask_max) { g_mask_max = d; g_mask_max_pc = g_mask_pc0; }
+            g_mask_n++; g_mask_sum += d; g_mask_in = 0;
+            for (k = 0; k < g_nmask_site; k++) if (g_mask_site[k].pc == g_mask_pc0) break;
+            if (k == g_nmask_site && g_nmask_site < MAX_MASK_SITES) { g_mask_site[k].pc = g_mask_pc0; g_mask_site[k].min = d; g_mask_site[k].max = d; g_mask_site[k].n = 0; g_nmask_site++; }
+            if (k < g_nmask_site) {
+                if (d < g_mask_site[k].min) g_mask_site[k].min = d;
+                if (d > g_mask_site[k].max) g_mask_site[k].max = d;
+                g_mask_site[k].n++;
+            } else g_mask_sites_overflow = 1;
+        }
+        g_mask_last_pc = avr->pc;
+    }
     if (g_vcd_path && !g_trace_done) {
         sample_t s;
         sample(avr, &s);
@@ -836,6 +871,15 @@ void forcing_finish(avr_t *avr, double wall_s)
         printf(",\"fn_cycles\":{\"start\":%u,\"end\":%u,\"to\":\"%s\",\"n\":%llu,\"min\":%llu,\"max\":%llu}", g_fn_start, g_fn_end,
                g_fn_by_sp ? "return (SP above entry; ret included)" : "end pc", (unsigned long long)g_fn_n,
                g_fn_n ? (unsigned long long)g_fn_min : 0ull, (unsigned long long)g_fn_max);
+    if (g_mask_on) {                      /* ipb-7 */
+        printf(",\"masked_windows\":{\"armed\":%d,\"n\":%llu,\"min\":%llu,\"max\":%llu,\"max_pc\":%u,\"mean\":%.3f,\"open_at_exit\":%d,\"sites_overflow\":%d,\"sites\":[",
+               g_mask_armed, (unsigned long long)g_mask_n, g_mask_n ? (unsigned long long)g_mask_min : 0ull, (unsigned long long)g_mask_max, g_mask_max_pc,
+               g_mask_n ? (double)g_mask_sum / (double)g_mask_n : 0.0, g_mask_in, g_mask_sites_overflow);
+        for (int k = 0; k < g_nmask_site; k++)
+            printf("%s{\"pc\":%u,\"n\":%llu,\"min\":%llu,\"max\":%llu}", k ? "," : "", g_mask_site[k].pc, (unsigned long long)g_mask_site[k].n,
+                   (unsigned long long)g_mask_site[k].min, (unsigned long long)g_mask_site[k].max);
+        printf("],\"note\":\"cycles with SREG.I cleared in main-line code (outside ISRs), from the cli (pc = its byte address) to the instruction that set I again; armed by the first sei\"}");
+    }
     if (g_watch_on) printf(",\"watch\":{\"name\":\"%s\",\"addr\":%u,\"w\":%d,\"final\":%u}", g_watch_name, g_watch_addr, g_watch_w, rd(avr, g_watch_addr, g_watch_w));
     if (g_vcd_path)
         printf(",\"trace\":{\"file\":\"%s\",\"written\":%d,\"samples\":%d,\"trigger_cycle\":%llu,\"first_cycle\":%llu,\"last_cycle\":%llu,\"window\":\"%d:%d\"}",

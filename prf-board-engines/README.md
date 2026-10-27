@@ -58,7 +58,10 @@ which cut `avr-objdump -d` of the UNO firmware (≈ 87 kB) and made scenario 1 "
 78.8 MB; **534.8 MB after sc-0, +0.12 MB**); `docker build --no-cache` 46 s with the base local (**72.5 s after sc-0**: pip in the build stage); one UNO compile 0.11 CPU-s / 30.5 MB peak RSS; the twin
 78.6 M cycles/s (4.9x real time) at 11.2 MB peak RSS. **sc-1:** image 534 804 667 B (+17 KB, the twin binary only), no-cache build 73.3 s,
 free-running speed unchanged (84–86 M cycles/s), 10 s with the sc-1 per-instruction step 2.83 s (+48 % vs free). **sc-2:** 534 811 269 B
-(+6.6 KB), no-cache build 69.4 s, 83.8–84.5 M cycles/s, 10 s with the step 2.82 s (unchanged). Full ledgers:
+(+6.6 KB), no-cache build 69.4 s, 83.8–84.5 M cycles/s, 10 s with the step 2.82 s (unchanged). **ipb-7 (2026-10-27, `--masked-windows`):**
+602 713 297 B (docker's 603 MB before and after on the current trixie base — the twin binary alone changed), cached rebuild 2.8 s of layer export; the
+masked-window bookkeeping is a few compares per instruction on the same stepped run `--isr-latency` already pays for (one `measure` of uno-light: 22 twin
+runs in 37 s with the probe subset, ~75 s whole). Full ledgers:
 `polari-framework/modules/board/COST.md`, `polari-framework/modules/firmwarefaults/COST.md`.
 
 **Twin SESSIONS (sim-0, `AI-Notes/plans/HARDWARE_BENCH_CONVERGENCE_PLAN.md` section 8):** `polari-avr-twin --ctl PORT [--ctl-token T]` (`twin_ctl.c`) adds a second
