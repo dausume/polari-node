@@ -23,6 +23,8 @@
  *   --list-vectors              print the interrupt table (index → vector number): it is in REGISTRATION order
  * sc-1:
  *   --watch may be given up to 8 times (the first is the VCD's watched word; all are in "watches" at exit)
+ * bss-2 (BENCH_SOLUTION_SIM_PLAN D-bss-12): every change of a watched word prints {"t":"watch-change","name":..,"from":..,"to":..,"cycle":..}
+ *   as it happens (the same shape as wire-edge), so "the struct field met its requirement at cycle N" is exact without a VCD over the whole run
  *   --isr-latency also measures each vector's ISR length (RUNNING raised → RUNNING lowered at reti): "isr_cycles"
  *   --ret-hist VEC:FILE         every time vector VEC is taken, count its return address (the main-loop PC it
  *                               interrupted) — "pc count" lines: the PHASE of that interrupt against the loop
@@ -158,6 +160,8 @@ static uint16_t g_watch_addr;
 static char g_watch_name[32] = "watch";
 static struct { uint16_t addr; int w; char name[32]; } g_watches[MAX_WATCH];
 static int g_nwatch;
+static uint32_t g_watch_last[MAX_WATCH];   /* bss-2: the value each watched word had at the previous step (watch-change events) */
+static int g_watch_primed;
 static uint64_t g_run_start[MAX_VEC], g_isr_max[MAX_VEC], g_isr_min[MAX_VEC], g_isr_n[MAX_VEC], g_isr_sum[MAX_VEC];
 static int g_hist_vec;
 static const char *g_hist_path;
@@ -616,6 +620,18 @@ void forcing_step(avr_t *avr)
 {
     g_forced_now = 0;
     sio_step(avr);
+    if (g_nwatch) {                      /* bss-2: a watched struct word changed since the previous step -> say so, with the cycle */
+        for (int k = 0; k < g_nwatch; k++) {
+            uint32_t v = rd(avr, g_watches[k].addr, g_watches[k].w);
+            if (g_watch_primed && v != g_watch_last[k]) {
+                printf("{\"t\":\"watch-change\",\"name\":\"%s\",\"from\":%u,\"to\":%u,\"cycle\":%llu}\n",
+                       g_watches[k].name, g_watch_last[k], v, (unsigned long long)avr->cycle);
+                fflush(stdout);
+            }
+            g_watch_last[k] = v;
+        }
+        g_watch_primed = 1;
+    }
     if (g_reenable_vec) {                /* sc-2 align-at-pc: the swallowed raise is over — the enable bit back, its flag cleared */
         avr_int_vector_t *vec = find_vec(avr, g_reenable_vec);
         if (vec) {
