@@ -195,6 +195,7 @@ static uint16_t g_fill_from;
 static int g_fn_on;
 static uint32_t g_fn_start, g_fn_end;
 static uint64_t g_fn_t0, g_fn_min = UINT64_MAX, g_fn_max, g_fn_n;
+static uint64_t g_fn_lo, g_fn_hi;      /* bss-9: an optional cycle WINDOW (@LO:HI): only entries at cycles in [LO, HI) are counted */
 static int g_fn_in, g_fn_by_sp;
 static uint16_t g_fn_sp;
 /* ipb-7: masked windows (SREG.I cleared in main-line code, outside ISRs) */
@@ -428,11 +429,21 @@ int forcing_parse_arg(int argc, char **argv, int *i)
     if (!strcmp(a, "--stack-fill") && v) { g_fill_on = 1; g_fill_from = (uint16_t)strtoul(v, NULL, 0); (*i)++; g_active = 1; return 1; }
     if (!strcmp(a, "--fn-cycles") && v) {
         unsigned s = 0, e = 0;
-        const char *c = strchr(v, ':');
+        char spec[128];
+        strncpy(spec, v, sizeof spec - 1);
+        spec[sizeof spec - 1] = 0;
+        char *at = strchr(spec, '@');   /* bss-9: 0xSTART:ret@LO:HI — count only the entries inside the cycle window */
+        if (at) {
+            unsigned long long lo = 0, hi = 0;
+            *at = 0;
+            if (sscanf(at + 1, "%llu:%llu", &lo, &hi) != 2 || hi <= lo) return -1;
+            g_fn_lo = lo; g_fn_hi = hi;
+        }
+        const char *c = strchr(spec, ':');
         if (c && !strcmp(c + 1, "ret")) {
-            s = (unsigned)strtoul(v, NULL, 0);
+            s = (unsigned)strtoul(spec, NULL, 0);
             g_fn_by_sp = 1;
-        } else if (sscanf(v, "%i:%i", (int *)&s, (int *)&e) != 2) return -1;
+        } else if (sscanf(spec, "%i:%i", (int *)&s, (int *)&e) != 2) return -1;
         g_fn_on = 1; g_fn_start = s; g_fn_end = e; (*i)++; g_active = 1; return 1;
     }
     if (!strcmp(a, "--uart-out") && v) { g_uart_path = v; (*i)++; g_active = 1; return 1; }
@@ -468,7 +479,7 @@ const char *forcing_usage(void)
            "       [--ret-hist VEC:FILE] [--ret-log VEC:FILE] [--masked-windows]\n"
            "       scenario (sc-2): [--align-at-pc pc=0xADDR,vec=N[,when=...]] [--flip-bit 0xADDR:BIT@CYCLE]\n"
            "       ucd-0d: [--pin-at cycle=N,pin=PDn,level=0|1] [--wire PSRCn:PDSTn]\n"
-           "       bss-8: [--adc-at cycle=N,ch=0..5,mv=M]\n%s", sio_usage());
+           "       bss-8: [--adc-at cycle=N,ch=0..5,mv=M]   bss-9: --fn-cycles 0xSTART:ret@LO:HI counts only the entries inside the cycle window\n%s", sio_usage());
     return buf;
 }
 
@@ -771,18 +782,22 @@ void forcing_step(avr_t *avr)
         if (avr->pc == g_fn_start && !running_vec(avr) && !g_fn_in) { g_fn_t0 = avr->cycle; g_fn_in = 1; g_fn_sp = sp_of(avr); }
         else if (g_fn_in && !running_vec(avr) && sp_of(avr) > g_fn_sp) {
             uint64_t d = avr->cycle - g_fn_t0;
-            if (d < g_fn_min) g_fn_min = d;
-            if (d > g_fn_max) g_fn_max = d;
-            g_fn_n++;
+            if (!g_fn_hi || (g_fn_t0 >= g_fn_lo && g_fn_t0 < g_fn_hi)) {   /* bss-9: outside the window the call is seen, not counted */
+                if (d < g_fn_min) g_fn_min = d;
+                if (d > g_fn_max) g_fn_max = d;
+                g_fn_n++;
+            }
             g_fn_in = 0;
         }
     } else if (g_fn_on) {
         if (avr->pc == g_fn_start && !running_vec(avr)) { g_fn_t0 = avr->cycle; g_fn_in = 1; }
         else if (avr->pc == g_fn_end && g_fn_in && !running_vec(avr)) {
             uint64_t d = avr->cycle - g_fn_t0;
-            if (d < g_fn_min) g_fn_min = d;
-            if (d > g_fn_max) g_fn_max = d;
-            g_fn_n++;
+            if (!g_fn_hi || (g_fn_t0 >= g_fn_lo && g_fn_t0 < g_fn_hi)) {
+                if (d < g_fn_min) g_fn_min = d;
+                if (d > g_fn_max) g_fn_max = d;
+                g_fn_n++;
+            }
             g_fn_in = 0;
         }
     }
@@ -945,9 +960,9 @@ void forcing_finish(avr_t *avr, double wall_s)
                "(AVR_INT_IRQ_RUNNING); the forced raise is excluded and reported on its event\"");
     }
     if (g_fn_on)
-        printf(",\"fn_cycles\":{\"start\":%u,\"end\":%u,\"to\":\"%s\",\"n\":%llu,\"min\":%llu,\"max\":%llu}", g_fn_start, g_fn_end,
+        printf(",\"fn_cycles\":{\"start\":%u,\"end\":%u,\"to\":\"%s\",\"n\":%llu,\"min\":%llu,\"max\":%llu,\"window_lo\":%llu,\"window_hi\":%llu}", g_fn_start, g_fn_end,
                g_fn_by_sp ? "return (SP above entry; ret included)" : "end pc", (unsigned long long)g_fn_n,
-               g_fn_n ? (unsigned long long)g_fn_min : 0ull, (unsigned long long)g_fn_max);
+               g_fn_n ? (unsigned long long)g_fn_min : 0ull, (unsigned long long)g_fn_max, (unsigned long long)g_fn_lo, (unsigned long long)g_fn_hi);
     if (g_mask_on) {                      /* ipb-7 */
         printf(",\"masked_windows\":{\"armed\":%d,\"n\":%llu,\"min\":%llu,\"max\":%llu,\"max_pc\":%u,\"mean\":%.3f,\"open_at_exit\":%d,\"sites_overflow\":%d,\"sites\":[",
                g_mask_armed, (unsigned long long)g_mask_n, g_mask_n ? (unsigned long long)g_mask_min : 0ull, (unsigned long long)g_mask_max, g_mask_max_pc,
