@@ -67,6 +67,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <avr_adc.h>
 #include <avr_ioport.h>
 #include <sim_interrupts.h>
 #include <sim_irq.h>
@@ -77,6 +78,7 @@
 #define PAINT 0xA5u
 #define MAX_WATCH 8
 #define MAX_PINAT 32   /* ucd-0d: --pin-at, repeatable (a few presses is plenty; irq-at's 64 is for edge trains) */
+#define MAX_ADCAT 32   /* bss-8: --adc-at, repeatable (a press and a release on an analog button, a level step on a sensor) */
 #define MAX_WIRE 8     /* ucd-0d: --wire, repeatable */
 
 typedef struct {
@@ -135,6 +137,18 @@ typedef struct {
     uint64_t done_cycle;
 } pinat_t;
 
+/* bss-8: --adc-at cycle=N,ch=C,mv=M — an ADC channel's millivolts STEPPED at a cycle (the same scheduler as --pin-at, raising
+ * simavr's ADC_IRQ_ADCn so the next conversion the firmware starts reads the new level: an analog button pressed, a sensor's
+ * level changing, at a known cycle; --adc0-mv / --adc-mv stay the rest levels the run starts at) */
+typedef struct {
+    uint64_t cycle;
+    int ch;                /* 0..5 */
+    uint32_t mv;
+    struct avr_irq_t *irq;
+    int done;
+    uint64_t done_cycle;
+} adcat_t;
+
 /* ucd-0d: --wire PSRC:PDST — the source pin's driven-output IRQ connected to the destination pin's input IRQ */
 typedef struct {
     char src_port; int src_bit;
@@ -153,6 +167,8 @@ static poke_t g_poke[MAX_POKES];
 static int g_npoke;
 static pinat_t g_pinat[MAX_PINAT];
 static int g_npinat;
+static adcat_t g_adcat[MAX_ADCAT];
+static int g_nadcat;
 static wire_t g_wire[MAX_WIRE];
 static int g_nwire;
 static int g_watch_on, g_watch_w;
@@ -286,6 +302,23 @@ static int parse_pinat(const char *s, pinat_t *q)
     return (q->port && (q->level == 0 || q->level == 1)) ? 0 : -1;
 }
 
+static int parse_adcat(const char *s, adcat_t *q)
+{
+    char buf[128];
+    int have_mv = 0;
+    memset(q, 0, sizeof *q);
+    q->ch = -1;
+    strncpy(buf, s, sizeof buf - 1);
+    buf[sizeof buf - 1] = 0;
+    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+        if (!strncmp(tok, "cycle=", 6)) q->cycle = strtoull(tok + 6, NULL, 0);
+        else if (!strncmp(tok, "ch=", 3)) q->ch = atoi(tok + 3);
+        else if (!strncmp(tok, "mv=", 3)) { q->mv = (uint32_t)strtoul(tok + 3, NULL, 10); have_mv = 1; }
+        else return -1;
+    }
+    return (q->ch >= 0 && q->ch <= 5 && have_mv && q->mv <= 5000u) ? 0 : -1;
+}
+
 static int parse_wire(const char *s, wire_t *w)
 {
     char buf[32];
@@ -363,6 +396,10 @@ int forcing_parse_arg(int argc, char **argv, int *i)
         if (g_npinat >= MAX_PINAT || parse_pinat(v, &g_pinat[g_npinat]) < 0) return -1;
         g_npinat++; (*i)++; g_active = 1; return 1;
     }
+    if (!strcmp(a, "--adc-at") && v) {
+        if (g_nadcat >= MAX_ADCAT || parse_adcat(v, &g_adcat[g_nadcat]) < 0) return -1;
+        g_nadcat++; (*i)++; g_active = 1; return 1;
+    }
     if (!strcmp(a, "--wire") && v) {
         if (g_nwire >= MAX_WIRE || parse_wire(v, &g_wire[g_nwire]) < 0) return -1;
         g_nwire++; (*i)++; g_active = 1; return 1;
@@ -430,7 +467,8 @@ const char *forcing_usage(void)
            "       [--stack-fill 0xBSS_END] [--isr-latency] [--fn-cycles 0xSTART:0xEND] [--uart-out FILE] [--seed N] [--list-vectors]\n"
            "       [--ret-hist VEC:FILE] [--ret-log VEC:FILE] [--masked-windows]\n"
            "       scenario (sc-2): [--align-at-pc pc=0xADDR,vec=N[,when=...]] [--flip-bit 0xADDR:BIT@CYCLE]\n"
-           "       ucd-0d: [--pin-at cycle=N,pin=PDn,level=0|1] [--wire PSRCn:PDSTn]\n%s", sio_usage());
+           "       ucd-0d: [--pin-at cycle=N,pin=PDn,level=0|1] [--wire PSRCn:PDSTn]\n"
+           "       bss-8: [--adc-at cycle=N,ch=0..5,mv=M]\n%s", sio_usage());
     return buf;
 }
 
@@ -551,6 +589,10 @@ int forcing_init(avr_t *avr)
     g_av = avr;
     for (int k = 0; k < g_npinat; k++)
         g_pinat[k].irq = port_irq(avr, g_pinat[k].port, g_pinat[k].bit);
+    for (int k = 0; k < g_nadcat; k++) {
+        g_adcat[k].irq = avr_io_getirq(avr, AVR_IOCTL_ADC_GETIRQ, ADC_IRQ_ADC0 + g_adcat[k].ch);
+        if (!g_adcat[k].irq) { fprintf(stderr, "--adc-at ch=%d: no such ADC channel on this mcu\n", g_adcat[k].ch); return -1; }
+    }
     for (int k = 0; k < g_nwire; k++) {
         wire_t *w = &g_wire[k];
         w->src_irq = port_irq(avr, w->src_port, w->src_bit);
@@ -662,6 +704,16 @@ void forcing_step(avr_t *avr)
         g_forced_now = 1;
         trigger(avr);
         printf("{\"t\":\"pin-at\",\"pin\":\"P%c%d\",\"level\":%d,\"cycle\":%llu}\n", q->port, q->bit, q->level, (unsigned long long)avr->cycle);
+        fflush(stdout);
+    }
+    for (int k = 0; k < g_nadcat; k++) {   /* bss-8: --adc-at — an ADC channel's level stepped at a cycle */
+        adcat_t *q = &g_adcat[k];
+        if (q->done || avr->cycle < q->cycle) continue;
+        avr_raise_irq(q->irq, q->mv);
+        q->done = 1; q->done_cycle = avr->cycle;
+        g_forced_now = 1;
+        trigger(avr);
+        printf("{\"t\":\"adc-at\",\"ch\":%d,\"mv\":%u,\"cycle\":%llu}\n", q->ch, q->mv, (unsigned long long)avr->cycle);
         fflush(stdout);
     }
     for (int k = 0; k < g_nwire; k++) {    /* ucd-0d: did the firmware ALSO drive the wire's destination pin? */
@@ -844,6 +896,15 @@ void forcing_finish(avr_t *avr, double wall_s)
             pinat_t *q = &g_pinat[k];
             printf("%s{\"pin\":\"P%c%d\",\"level\":%d,\"target_cycle\":%llu,\"fired\":%d,\"cycle\":%llu}",
                    k ? "," : "", q->port, q->bit, q->level, (unsigned long long)q->cycle, q->done, (unsigned long long)q->done_cycle);
+        }
+        printf("]");
+    }
+    if (g_nadcat) {
+        printf(",\"adc_at\":[");
+        for (int k = 0; k < g_nadcat; k++) {
+            adcat_t *q = &g_adcat[k];
+            printf("%s{\"ch\":%d,\"mv\":%u,\"target_cycle\":%llu,\"fired\":%d,\"cycle\":%llu}",
+                   k ? "," : "", q->ch, q->mv, (unsigned long long)q->cycle, q->done, (unsigned long long)q->done_cycle);
         }
         printf("]");
     }
