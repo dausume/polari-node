@@ -77,8 +77,8 @@
 #define MAX_VEC 64
 #define PAINT 0xA5u
 #define MAX_WATCH 8
-#define MAX_PINAT 32   /* ucd-0d: --pin-at, repeatable (a few presses is plenty; irq-at's 64 is for edge trains) */
-#define MAX_ADCAT 32   /* bss-8: --adc-at, repeatable (a press and a release on an analog button, a level step on a sensor) */
+#define MAX_PINAT 256  /* ucd-0d: --pin-at, repeatable; bss-11: a bouncing press is an edge TRAIN (node_run expands one press into ~14 entries) */
+#define MAX_ADCAT 256  /* bss-8: --adc-at, repeatable (a press and a release on an analog button, a level step on a sensor); bss-11: bounce trains */
 #define MAX_WIRE 8     /* ucd-0d: --wire, repeatable */
 
 typedef struct {
