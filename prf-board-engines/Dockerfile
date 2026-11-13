@@ -45,7 +45,8 @@ COPY --from=twin-build /opt/pyvcd/ /usr/lib/python3/dist-packages/
 COPY polari_vcd_window.py /usr/local/bin/polari-vcd-window
 COPY board_engines_service.py board_sessions.py /srv/
 COPY cost.json /srv/cost.json
-RUN useradd -m -u 1000 worker && mkdir -p /srv/sessions && chown worker /srv/sessions && avr-gcc --version | head -1 && riscv64-unknown-elf-gcc --version | head -1 && polari-avr-twin 2>&1 | head -1 || true
+RUN useradd -m -u 1000 worker && mkdir -p /srv/sessions && chown worker /srv/sessions && avr-gcc --version >/dev/null && riscv64-unknown-elf-gcc --version >/dev/null && avr-gcc --version | head -1 && riscv64-unknown-elf-gcc --version | head -1 \
+    && (polari-avr-twin 2>&1 | head -1 || true)
 USER worker
 WORKDIR /w
 # sim-0: 9832-9863 = twin sessions (a tcp + a ctl port each; 9840/9850/9860 stay with the other hw-engines workers)
