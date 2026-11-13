@@ -12,6 +12,9 @@
 #                                                                                                         the worker returns stdout/stderr WHOLE (was: the last 20 000 chars)
 #   pyvcd 0.5.0 + polari-vcd-window     MIT (pyvcd; pure Python, no deps)                                 sc-0: the engine-side VCD reader (the "cycles around the fault" rows);
 #                                                                                                         trixie has no python3-pyvcd, so the PyPI wheel is installed BY HASH in the build stage
+#   gcc-riscv64-unknown-elf 14.2.0+19   GPL-3.0+ with the GCC Runtime Library Exception (upstream gcc)    hal-4 (2026-11-13, the user's go): the RISC-V C compiler,
+#   + binutils-riscv64-unknown-elf      binutils GPL-3.0+                                                 multilib rv32i..rv32imafdc / rv64i..rv64imafc (Hazard3, VexRiscv,
+#     2.44-3+7+b1                                                                                         the C3, rv64 later); .deb sha256 c5637d33...8295dc (trixie pool)
 #   make (GPL-3.0+) so the template Makefile also runs in the image
 #   python3-falcon + gunicorn           Apache-2.0 / MIT                                                  the /capability + /run worker
 #
@@ -33,14 +36,16 @@ RUN gcc -O2 -Wall -Wextra -o /src/polari-avr-twin /src/polari_avr_twin.c /src/tw
 FROM ${BASE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc-avr binutils-avr avr-libc avrdude simavr libsimavr2 make cmake python3-falcon gunicorn \
+        gcc-riscv64-unknown-elf=14.2.0+19 binutils-riscv64-unknown-elf=2.44-3+7+b1 \
     && rm -rf /var/lib/apt/lists/* \
-    && dpkg-query -W -f '${Package} ${Version}\n' gcc-avr binutils-avr avr-libc avrdude simavr libsimavr2 python3-falcon gunicorn
+    && dpkg-query -W -f '${Package} ${Version}\n' gcc-avr binutils-avr avr-libc avrdude simavr libsimavr2 python3-falcon gunicorn \
+        gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf
 COPY --from=twin-build /src/polari-avr-twin /usr/local/bin/polari-avr-twin
 COPY --from=twin-build /opt/pyvcd/ /usr/lib/python3/dist-packages/
 COPY polari_vcd_window.py /usr/local/bin/polari-vcd-window
 COPY board_engines_service.py board_sessions.py /srv/
 COPY cost.json /srv/cost.json
-RUN useradd -m -u 1000 worker && mkdir -p /srv/sessions && chown worker /srv/sessions && avr-gcc --version | head -1 && polari-avr-twin 2>&1 | head -1 || true
+RUN useradd -m -u 1000 worker && mkdir -p /srv/sessions && chown worker /srv/sessions && avr-gcc --version | head -1 && riscv64-unknown-elf-gcc --version | head -1 && polari-avr-twin 2>&1 | head -1 || true
 USER worker
 WORKDIR /w
 # sim-0: 9832-9863 = twin sessions (a tcp + a ctl port each; 9840/9850/9860 stay with the other hw-engines workers)
