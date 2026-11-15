@@ -100,6 +100,9 @@ class Capability:
                       'engines': {e: {'available': bool(shutil.which(b)), 'version': _version(e), 'binary': b} for e, b in ENGINES.items()},
                       'sessions': board_sessions.info(),
                       'protocol': 'POST /run {engine, args, files, files_b64, timeout} — argv only, files round-trip; never a flash'}
+        door = board_sessions.transports()   # td-0: present only when this worker has a twin door (TWIN_DOOR_URL)
+        if door:
+            resp.media['transports'] = door
 
 
 class SystemInfo:

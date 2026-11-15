@@ -17,9 +17,12 @@
 #     2.44-3+7+b1                                                                                         the C3, rv64 later); .deb sha256 c5637d33...8295dc (trixie pool)
 #   make (GPL-3.0+) so the template Makefile also runs in the image
 #   python3-falcon + gunicorn           Apache-2.0 / MIT                                                  the /capability + /run worker
+#   python3-websockets 15.0.1-1         BSD-3-Clause (trixie package, pure Python)                        td-0 (TWIN_DOOR_PLAN.md): twin_door.py, the WebSocket door to twin sessions;
+#                                                                                                         the SAME image runs it as its own container (`python3 /srv/twin_door.py`, :9864)
 #
 #   docker build -t prf-board-engines:trixie .
 #   docker run --rm -p 9830:9830 prf-board-engines:trixie                         # the worker
+#   docker run --rm -p 9864:9864 -e TWIN_DOOR_WORKER=http://<worker>:9830 prf-board-engines:trixie python3 /srv/twin_door.py   # the twin door
 #   docker run --rm -v $PWD:/w -w /w prf-board-engines:trixie avr-gcc --version   # one engine, CLI style
 # Versions are printed at build time (the last RUN) and served by GET /capability.
 ARG BASE=debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
@@ -35,20 +38,23 @@ RUN gcc -O2 -Wall -Wextra -o /src/polari-avr-twin /src/polari_avr_twin.c /src/tw
 
 FROM ${BASE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        gcc-avr binutils-avr avr-libc avrdude simavr libsimavr2 make cmake python3-falcon gunicorn \
+        gcc-avr binutils-avr avr-libc avrdude simavr libsimavr2 make cmake python3-falcon gunicorn python3-websockets=15.0.1-1 \
         gcc-riscv64-unknown-elf=14.2.0+19 binutils-riscv64-unknown-elf=2.44-3+7+b1 \
     && rm -rf /var/lib/apt/lists/* \
-    && dpkg-query -W -f '${Package} ${Version}\n' gcc-avr binutils-avr avr-libc avrdude simavr libsimavr2 python3-falcon gunicorn \
+    && dpkg-query -W -f '${Package} ${Version}\n' gcc-avr binutils-avr avr-libc avrdude simavr libsimavr2 python3-falcon gunicorn python3-websockets \
         gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf
 COPY --from=twin-build /src/polari-avr-twin /usr/local/bin/polari-avr-twin
 COPY --from=twin-build /opt/pyvcd/ /usr/lib/python3/dist-packages/
 COPY polari_vcd_window.py /usr/local/bin/polari-vcd-window
-COPY board_engines_service.py board_sessions.py /srv/
+COPY board_engines_service.py board_sessions.py twin_door.py twin_door_selftest.py /srv/
 COPY cost.json /srv/cost.json
 RUN useradd -m -u 1000 worker && mkdir -p /srv/sessions && chown worker /srv/sessions && avr-gcc --version >/dev/null && riscv64-unknown-elf-gcc --version >/dev/null && avr-gcc --version | head -1 && riscv64-unknown-elf-gcc --version | head -1 \
     && (polari-avr-twin 2>&1 | head -1 || true)
 USER worker
 WORKDIR /w
+# td-0: the door, the token check and the transports block are proved IN the image (its own websockets and falcon); a failure fails the build
+RUN python3 /srv/twin_door_selftest.py
 # sim-0: 9832-9863 = twin sessions (a tcp + a ctl port each; 9840/9850/9860 stay with the other hw-engines workers)
-EXPOSE 9830 9831 9832-9863
+# td-0: 9864 = the twin door (twin_door.py), served by its own container of this image
+EXPOSE 9830 9831 9832-9863 9864
 CMD ["gunicorn", "-b", "0.0.0.0:9830", "-w", "1", "-t", "600", "--chdir", "/srv", "board_engines_service:app"]

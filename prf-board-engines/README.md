@@ -68,3 +68,12 @@ the chip lacks is refused in words); one client at a time. The worker (`board_se
 owner, free}` -> ports from 9832-9863 (minus the other hw-engines workers' 9840/9850/9860), state under `/srv/sessions/`, `GET /sessions`, `GET|DELETE /sessions/{id}`, a TTL
 reaper on every request and every 5 s, the token passed to the twin by environment. `GET /capability` has a `sessions` block. Measured cost: `polari-framework/modules/board/COST.md` (sim-0).
 
+**The twin door (td-0, `AI-Notes/plans/TWIN_DOOR_PLAN.md` §3/§3a).** The session ports are plain TCP inside the worker; an isle agent serves 443 only, so a caller on
+another device cannot dial them. `twin_door.py` is one WebSocket port (9864) run as ITS OWN container of this image (`python3 /srv/twin_door.py`,
+`TWIN_DOOR_WORKER=http://<worker>:9830`) and registered as its own isle app with its own name (`twin.board-engines.isle`): `/sessions/<id>/ctl` carries the control
+line (text frames, one JSON line each) and `/sessions/<id>/uart` the serial stream (binary frames). The first frame is `{"token": "..."}`; the door asks the worker
+(`POST /sessions/{id}/check`: 200 / 403 / 404 / 410) and never holds a token; a wrong token never reaches the twin. It pings every 20 s (the agent drops a proxied
+stream after 60 s of silence). A worker started with `TWIN_DOOR_URL=wss://twin.board-engines.isle` advertises `transports: {ctl, uart}` at the top of
+`GET /capability`; without it nothing is advertised and callers keep plain TCP (the dev compose). `python3 twin_door_selftest.py` proves all of it against the real
+worker app and the real door with a stand-in twin (26 checks), and the image build runs it, so a broken door fails the build.
+
