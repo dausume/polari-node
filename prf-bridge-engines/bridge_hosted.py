@@ -5,12 +5,17 @@ A hosted bridge is the generated Polari Hardware Bridge (the Java app grpcbridge
 `source=twin-tcp` (brg-0, TcpDevicePort): it reads the session's raw USART tcp port, decodes the frames and pushes them to a Polari backend over gRPC,
 and carries the backend's commands back down. The worker does not generate anything: the caller sends the generated project (path -> text).
 
-  POST   /bridges        {session_id, twin_host, twin_port, bridge_name, files, grpc_target?, token?, ttl_s?, owner?}
+  POST   /bridges        {session_id, twin_host, twin_port, twin_uart?, bridge_name, files, grpc_target?, token?, ttl_s?, owner?}
+                         (twin_host / twin_port are not needed when twin_uart is a door)
                          -> {ok, id, state, ...}. `files` = the generated project ({path: text}; only pom.xml, src/** and bridge.properties are used).
                          The jar is BUILT here (mvn, offline from the image's warmed repository) and CACHED by the sha256 of the project (everything
                          but bridge.properties), so the second bridge of the same code starts at once. state: building -> running | failed -> ended.
                          `grpc_target` unset = log-only (grpc.enabled=false): the bridge decodes and prints every frame - the proof mode.
-                         `token` is accepted and NOT used: only the twin's control port is token-gated, the USART port the bridge reads is raw.
+                         `twin_uart` (td-4, TWIN_DOOR_PLAN.md) says HOW the bridge reaches the session's serial stream: `wss://<door>/sessions/<id>/uart`
+                         = through the board-engines worker's twin door (source=twin-door, WsDevicePort), `tcp://host:port` = the raw port; unset =
+                         twin_host / twin_port as before. A door needs `token` (the session's): it is handed to the bridge's process in the environment
+                         variable TWIN_TOKEN and is kept NOWHERE else here - not in the state file, the properties, the command line or a log. Without
+                         a door `token` is accepted and not used (the raw USART port is not token-gated).
   GET    /bridges        {ok, bridges: [..], max}
   GET    /bridges/{id}   one bridge + the tail of its output + RSS / CPU seconds of the live process
   GET    /bridges/{id}/logs?tail=N&which=run|build     the output lines
@@ -47,7 +52,11 @@ JAR_NAME = 'polari-hw-bridge.jar'
 _lock = threading.RLock()
 _procs = {}        # id -> Popen (a finished child is wait()ed, not left a zombie)
 _build_locks = {}  # fingerprint -> Lock (two bridges of the same code build once)
-_OWN_KEYS = ('source', 'twin.host', 'twin.port', 'twin.connect_timeout_s', 'grpc.enabled', 'grpc.target', 'max_frames')
+_OWN_KEYS = ('source', 'twin.host', 'twin.port', 'twin.uart', 'twin.connect_timeout_s', 'grpc.enabled', 'grpc.target', 'max_frames')
+_HOST = r'[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?'
+_UART_DOOR = re.compile(r'(wss://%s|ws://(127\.0\.0\.1|localhost))(:\d{1,5})?/[A-Za-z0-9._~%%/-]{1,200}' % _HOST)
+_UART_TCP = re.compile(r'tcp://%s:\d{1,5}' % _HOST)
+_TOKEN = re.compile(r'[A-Za-z0-9._~+/=-]{8,256}')
 
 
 def _path(bid, ext):
@@ -165,7 +174,7 @@ def reap():
 
 def _public(s, detail=False):
     now = time.time()
-    keys = ('id', 'session_id', 'bridge_name', 'twin_host', 'twin_port', 'grpc_target', 'owner', 'state', 'started', 'expires', 'ttl_s', 'pid', 'jar_sha256',
+    keys = ('id', 'session_id', 'bridge_name', 'twin_host', 'twin_port', 'twin_uart', 'grpc_target', 'owner', 'state', 'started', 'expires', 'ttl_s', 'pid', 'jar_sha256',
             'jar_bytes', 'build_fp', 'build', 'end_reason')
     out = {k: s.get(k) for k in keys if k in s}
     out['grpc'] = bool(s.get('grpc_target'))
@@ -243,16 +252,22 @@ def _build(fp, files, log_path):
 
 
 def _properties(base, s):
-    """bridge.properties text: the generated one with this bridge's own keys replaced (twin-tcp, the session's host and port, gRPC on/off)."""
+    """bridge.properties text: the generated one with this bridge's own keys replaced (how it reaches the twin, gRPC on/off). The session's token is never
+    written here: a door bridge reads it from its environment (TWIN_TOKEN)."""
     keep = [ln for ln in (base or '').splitlines() if ln.split('=', 1)[0].strip() not in _OWN_KEYS]
-    mine = ['# hosted bridge %s beside twin session %s (sim-2)' % (s['id'], s['session_id']), 'source=twin-tcp', 'twin.host=%s' % s['twin_host'],
-            'twin.port=%d' % s['twin_port'], 'twin.connect_timeout_s=30', 'max_frames=0']
+    uart = s.get('twin_uart') or ''
+    mine = ['# hosted bridge %s beside twin session %s (sim-2)' % (s['id'], s['session_id']),
+            'source=%s' % ('twin-door' if _UART_DOOR.fullmatch(uart) else 'twin-tcp')]
+    mine += ['twin.host=%s' % s['twin_host'], 'twin.port=%d' % s['twin_port']] if s.get('twin_port') else []
+    mine += ['twin.uart=%s' % uart] if uart else []
+    mine += ['twin.connect_timeout_s=30', 'max_frames=0']
     mine += ['grpc.enabled=true', 'grpc.target=%s' % s['grpc_target']] if s.get('grpc_target') else ['grpc.enabled=false']
     return '\n'.join(keep + mine) + '\n'
 
 
-def _run_bridge(s, files):
-    """Build (or find) the jar, then start the detached process. Runs in a thread; every outcome lands in the state file."""
+def _run_bridge(s, files, token=''):
+    """Build (or find) the jar, then start the detached process. Runs in a thread; every outcome lands in the state file. `token` (a door bridge's) lives
+    in this call's memory and in the child's environment only."""
     bid = s['id']
     jar, why, info = _build(s['build_fp'], files, _path(bid, 'build.log'))
     with _lock:
@@ -269,7 +284,8 @@ def _run_bridge(s, files):
             f.write(_properties(files.get('bridge.properties', ''), s))
         out = open(_path(bid, 'log'), 'wb')
         proc = subprocess.Popen([JAVA, '-Xmx160m', '-XX:+UseSerialGC', '-Xss512k', '-jar', jar, props], stdout=out, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, cwd=DIR, start_new_session=True)
+                                stdin=subprocess.DEVNULL, cwd=DIR, start_new_session=True,
+                                env=dict(os.environ, TWIN_TOKEN=token) if token else None)
         out.close()
         _procs[bid] = proc
         s['state'], s['pid'] = 'running', proc.pid
@@ -287,14 +303,25 @@ def start(body):
         files, why = _safe_files(body.get('files'))
         if files is None:
             return falcon.HTTP_400, {'ok': False, 'error': why}
+        uart, token = body.get('twin_uart') or '', ''
+        door = isinstance(uart, str) and bool(_UART_DOOR.fullmatch(uart))
+        if door:
+            token = body.get('token')
+            if not isinstance(token, str) or not _TOKEN.fullmatch(token):
+                return falcon.HTTP_400, {'ok': False, 'error': 'twin_uart is a twin door (%s): "token" must be the session\'s token, which the door asks for first' % uart}
+        elif uart and not (isinstance(uart, str) and _UART_TCP.fullmatch(uart)):
+            return falcon.HTTP_400, {'ok': False, 'error': 'twin_uart is wss://<door>/sessions/<id>/uart (the worker\'s twin door) or tcp://host:port (the raw port); '
+                                                           'ws:// without TLS is accepted for 127.0.0.1 / localhost only'}
         host = str(body.get('twin_host') or '')
-        if not re.fullmatch(r'[A-Za-z0-9._:-]{1,253}', host):
-            return falcon.HTTP_400, {'ok': False, 'error': 'twin_host is the host name or address of the worker running the twin session'}
         try:
-            port, ttl = int(body.get('twin_port')), int(body.get('ttl_s') or TTL_DEFAULT)
+            port, ttl = int(body.get('twin_port') or 0), int(body.get('ttl_s') or TTL_DEFAULT)
         except (TypeError, ValueError):
             return falcon.HTTP_400, {'ok': False, 'error': 'twin_port and ttl_s are whole numbers'}
-        if not 1 <= port <= 65535:
+        if door and not (re.fullmatch(r'[A-Za-z0-9._:-]{1,253}', host) and 1 <= port <= 65535):
+            host, port = '', 0      # a door session is reached at the door alone: its worker need not publish (or even say) a TCP port
+        elif not re.fullmatch(r'[A-Za-z0-9._:-]{1,253}', host):
+            return falcon.HTTP_400, {'ok': False, 'error': 'twin_host is the host name or address of the worker running the twin session'}
+        elif not 1 <= port <= 65535:
             return falcon.HTTP_400, {'ok': False, 'error': 'twin_port must be 1 to 65535 (the session\'s USART tcp port)'}
         if not TTL_MIN <= ttl <= TTL_MAX:
             return falcon.HTTP_400, {'ok': False, 'error': 'ttl_s must be %d to %d seconds (%d is the default)' % (TTL_MIN, TTL_MAX, TTL_DEFAULT)}
@@ -308,11 +335,11 @@ def start(body):
         if len(live) >= MAX_BRIDGES:
             return falcon.HTTP_503, {'ok': False, 'error': 'this worker already hosts %d bridges (the limit; stop one first)' % len(live)}
         bid, started = secrets.token_hex(6), time.time()
-        s = {'id': bid, 'session_id': session, 'bridge_name': bname, 'twin_host': host, 'twin_port': port, 'grpc_target': grpc, 'owner': owner, 'state': 'building',
+        s = {'id': bid, 'session_id': session, 'bridge_name': bname, 'twin_host': host, 'twin_port': port, 'twin_uart': uart, 'grpc_target': grpc, 'owner': owner, 'state': 'building',
              'started': started, 'ttl_s': ttl, 'expires': started + ttl, 'pid': 0, 'build_fp': _fingerprint(files)}
         os.makedirs(DIR, exist_ok=True)
         _save(s)
-        threading.Thread(target=_run_bridge, args=(s, files), daemon=True, name='bridge-build-' + bid).start()
+        threading.Thread(target=_run_bridge, args=(s, files, token), daemon=True, name='bridge-build-' + bid).start()
     # a cached jar starts within a moment: give it a short window so the common answer is already `running`
     for _ in range(40):
         time.sleep(0.05)

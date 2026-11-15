@@ -46,8 +46,10 @@ class Capability:
                       'engines': {'java': {'available': bool(shutil.which('java')), 'version': _version('java', ['-version']), 'binary': 'java'},
                                   'mvn': {'available': bool(shutil.which('mvn')), 'version': _version('mvn', ['-B', '-v']), 'binary': 'mvn'}},
                       'bridges': bridge_hosted.info(),
-                      'protocol': 'POST /bridges {session_id, twin_host, twin_port, bridge_name, files, grpc_target?} - builds the generated project (cached by sha) and '
-                                  'runs it with source=twin-tcp; GET/DELETE /bridges/{id}; GET /bridges/{id}/logs'}
+                      'protocol': 'POST /bridges {session_id, twin_host, twin_port, twin_uart?, token?, bridge_name, files, grpc_target?} - builds the generated '
+                                  'project (cached by sha) and runs it with source=twin-tcp, or source=twin-door when twin_uart is the board worker\'s twin door '
+                                  '(wss://.../sessions/{id}/uart; the session token goes to the bridge by environment only); GET/DELETE /bridges/{id}; '
+                                  'GET /bridges/{id}/logs'}
 
 
 class SystemInfo:
