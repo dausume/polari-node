@@ -46,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=twin-build /src/polari-avr-twin /usr/local/bin/polari-avr-twin
 COPY --from=twin-build /opt/pyvcd/ /usr/lib/python3/dist-packages/
 COPY polari_vcd_window.py /usr/local/bin/polari-vcd-window
-COPY board_engines_service.py board_sessions.py twin_door.py twin_door_selftest.py /srv/
+COPY board_engines_service.py board_sessions.py twin_door.py twin_door_selftest.py twin_hold_selftest.py /srv/
 COPY cost.json /srv/cost.json
 RUN useradd -m -u 1000 worker && mkdir -p /srv/sessions && chown worker /srv/sessions && avr-gcc --version >/dev/null && riscv64-unknown-elf-gcc --version >/dev/null && avr-gcc --version | head -1 && riscv64-unknown-elf-gcc --version | head -1 \
     && (polari-avr-twin 2>&1 | head -1 || true)
@@ -54,6 +54,8 @@ USER worker
 WORKDIR /w
 # td-0: the door, the token check and the transports block are proved IN the image (its own websockets and falcon); a failure fails the build
 RUN python3 /srv/twin_door_selftest.py
+# a level set on an input pin HOLDS across the firmware's port writes (the real twin, a firmware compiled here); a failure fails the build
+RUN python3 /srv/twin_hold_selftest.py
 # sim-0: 9832-9863 = twin sessions (a tcp + a ctl port each; 9840/9850/9860 stay with the other hw-engines workers)
 # td-0: 9864 = the twin door (twin_door.py), served by its own container of this image
 EXPOSE 9830 9831 9832-9863 9864

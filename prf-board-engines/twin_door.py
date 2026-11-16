@@ -27,8 +27,11 @@ be reached, 4503 the worker could not be asked; 1003 a frame of the wrong kind; 
 import asyncio
 import http
 import json
+import logging
 import os
 import re
+import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -46,6 +49,10 @@ MAX_FRAME = 1 << 20
 PATH = re.compile(r'^/sessions/([0-9a-f]{6,32})/(ctl|uart)$')
 STREAM_PORT = {'ctl': 'ctl', 'uart': 'tcp'}
 LIVE = {}   # (sid, stream) -> (connection, asyncio.Event set when its twin socket is closed)
+# One line per connection that opens, one when it closes, one for each that is turned away - so a proof made from another
+# device can be checked from this container's log (asked for by pol, 2026-11-16: the door logged nothing per session).
+# The line carries the session id, the stream, the close code and the seconds it stood. NEVER the token, never a frame.
+LOG = logging.getLogger('twin_door')
 
 
 def _ask(method, path, body=None, timeout=4):
@@ -142,16 +149,19 @@ async def handler(ws):
     try:
         first = await asyncio.wait_for(ws.recv(), TOKEN_WAIT_S)
     except asyncio.TimeoutError:
+        LOG.info('refused session=%s stream=%s code=4401 (no token frame)', sid, stream)
         await ws.close(4401, 'no token frame within %d s' % TOKEN_WAIT_S)
         return
     except ConnectionClosed:
         return
     token = _token_of(first)
     if token is None:
+        LOG.info('refused session=%s stream=%s code=4400 (first frame is not a token)', sid, stream)
         await ws.close(4400, 'the first frame must be {"token": "..."} as text')
         return
     code, ports = await asyncio.to_thread(check, sid, token)
     if code:
+        LOG.info('refused session=%s stream=%s code=%d', sid, stream, code)
         await ws.close(code, ports)
         return
     key = (sid, stream)
@@ -165,9 +175,12 @@ async def handler(ws):
     try:
         reader, writer = await asyncio.wait_for(asyncio.open_connection(TARGET, int(ports[STREAM_PORT[stream]]), limit=MAX_FRAME), DIAL_S)
     except (OSError, asyncio.TimeoutError, KeyError, TypeError, ValueError):
+        LOG.info('refused session=%s stream=%s code=4502 (twin port not reached)', sid, stream)
         await ws.close(4502, 'the twin port of session %s could not be reached' % sid)
         return
     gone = asyncio.Event()
+    t0 = time.monotonic()
+    LOG.info('open session=%s stream=%s', sid, stream)
     LIVE[key] = (ws, gone)
     tasks = []
     try:
@@ -196,6 +209,7 @@ async def handler(ws):
         if LIVE.get(key, (None,))[0] is ws:
             LIVE.pop(key, None)
         gone.set()
+        LOG.info('close session=%s stream=%s code=%s after=%.1fs', sid, stream, getattr(ws, 'close_code', None) or '-', time.monotonic() - t0)
 
 
 async def main(host='0.0.0.0', port=PORT, ready=None):
@@ -207,4 +221,8 @@ async def main(host='0.0.0.0', port=PORT, ready=None):
 
 
 if __name__ == '__main__':
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s twin-door %(message)s', datefmt='%Y-%m-%dT%H:%M:%SZ')
+    logging.Formatter.converter = time.gmtime
+    logging.getLogger('websockets').setLevel(logging.WARNING)   # its INFO is one line per /health probe and per handshake: it would bury the session lines
+    LOG.info('listening on port %d, worker %s', PORT, WORKER)
     asyncio.run(main())

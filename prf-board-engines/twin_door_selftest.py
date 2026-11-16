@@ -124,6 +124,15 @@ def run(check):
     lg.setLevel(logging.DEBUG)
     lg.addHandler(Pings())
     lg.propagate = False
+    door_log = []
+
+    class Lines(logging.Handler):
+        def emit(self, rec):
+            door_log.append(rec.getMessage())
+    dl = logging.getLogger('twin_door')
+    dl.setLevel(logging.INFO)
+    dl.addHandler(Lines())
+    dl.propagate = False
     up = threading.Event()
     threading.Thread(target=lambda: asyncio.run(door.main('127.0.0.1', dport, ready=lambda s: up.set())), daemon=True).start()
     up.wait(5)
@@ -304,6 +313,19 @@ def run(check):
     check('td-0 END: stopping the session closes both open streams with 4410, and a later join is 4404',
           (e1[0], e2[0], late[0]) == (4410, 4410, 4404), (e1, e2, late))
     check('td-0 DOOR STATE: the door holds no connection once every stream is closed', not door.LIVE, list(door.LIVE))
+    # ---- the door's own record (one line per open, close and refusal; checkable from the container's log)
+    end = time.time() + 3
+    want_close = ['close session=%s stream=%s code=4410' % (sid, k) for k in ('ctl', 'uart')]
+    while time.time() < end and not all(any(l.startswith(w) for l in door_log) for w in want_close):
+        time.sleep(0.05)
+    opens = [l for l in door_log if l.startswith('open session=%s ' % sid)]
+    check('td-0 LOG: every stream that opened left an open line and a close line with its code and seconds (the last two closed 4410)',
+          {l.split()[2] for l in opens} == {'stream=ctl', 'stream=uart'} and all(any(l.startswith(w) and ' after=' in l for l in door_log) for w in want_close)
+          and len([l for l in door_log if l.startswith('close ')]) == len([l for l in door_log if l.startswith('open ')]), door_log[-6:])
+    check('td-0 LOG: each connection turned away left a refused line with its code (4401, 4400, 4403, 4404 all seen)',
+          all(any(l.startswith('refused ') and ' code=%d' % c in l for l in door_log) for c in (4401, 4400, 4403, 4404)),
+          [l for l in door_log if l.startswith('refused ')])
+    check('td-0 LOG: no line carries the token (nor any part of a frame)', door_log and not any(tok in l or 'token":' in l for l in door_log), '')
     src = open(os.path.join(HERE, 'twin_door.py')).read()
     check('td-0 SOURCE: the door never reads the session files and keeps no token (the worker is the only holder)',
           'SESSIONS_DIR' not in src and 'board_sessions' not in src and 'compare_digest' not in src, '')

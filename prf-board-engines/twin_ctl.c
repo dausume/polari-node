@@ -176,7 +176,7 @@ static void handle(const ctl_host_t *h, const char *l)
         if (jint(l, "level", &v) || (v != 0 && v != 1)) refuse("set needs \"level\": 0 or 1");
         else if (!forcing_pin_irq(h->avr, s)) refuse_pin(h, s);
         else {
-            avr_raise_irq(forcing_pin_irq(h->avr, s), (uint32_t)v);
+            forcing_drive_pin(h->avr, s, (int)v);   /* held: a pull-up does not take the pin back at the next port write */
             outf("{\"t\":\"ack\",\"of\":\"set\",\"pin\":\"%s\",\"level\":%ld,\"cycle\":%llu}", s, v, (unsigned long long)h->avr->cycle);
         }
     }
