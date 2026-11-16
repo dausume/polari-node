@@ -8,6 +8,9 @@ board_sessions — sim-0 (HARDWARE_BENCH_CONVERGENCE_PLAN.md §8): twin SESSIONS
   GET    /sessions        {ok, sessions: [..], ports, max}        (no tokens)
   GET    /sessions/{id}   one session + the twin's LATEST status line (read from its stdout file)
   DELETE /sessions/{id}   stop it now
+  POST   /sessions/{id}/check {token}  td-0: 200 {ok, id, ports, expires} when that is the running session's token; 403 wrong
+                          token, 404 unknown id, 410 ended. The twin door (twin_door.py) asks this before it joins a caller to
+                          a session port; the worker stays the only holder of tokens.
 
 State is one file per session under SESSIONS_DIR (default /srv/sessions): <id>.json (pid, ports, hex sha, started, ttl, owner,
 token - mode 0600), <id>.hex, <id>.out (the twin's stdout+stderr). A reaper kills sessions past their TTL on EVERY request and
@@ -17,6 +20,7 @@ minus the other hw-engines workers' published ports 9840/9850/9860).
 """
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -275,6 +279,35 @@ class Session:
             resp.media = {'ok': True, 'id': s['id'], 'stopped': True}
 
 
+class Check:
+    """td-0: the twin door's question - is this the token of a running session? Never says what the token is."""
+    def on_post(self, req, resp, sid):
+        reap()
+        try:
+            body = json.load(req.bounded_stream)
+        except Exception:
+            body = None
+        token = body.get('token') if isinstance(body, dict) else None
+        s = _load(re.sub(r'[^0-9a-f]', '', sid))
+        if not s:
+            resp.status, resp.media = falcon.HTTP_404, {'ok': False, 'error': 'no session %s on this worker' % sid}
+        elif s.get('ended'):
+            resp.status, resp.media = falcon.HTTP_410, {'ok': False, 'error': 'session %s has ended: %s' % (s['id'], s.get('end_reason', ''))}
+        elif not isinstance(token, str) or not hmac.compare_digest(token.encode(), str(s.get('token') or '').encode()):
+            resp.status, resp.media = falcon.HTTP_403, {'ok': False, 'error': 'the token is wrong for session %s' % s['id']}
+        else:
+            resp.media = {'ok': True, 'id': s['id'], 'ports': s['ports'], 'expires': s['expires']}
+
+
+def transports():
+    """td-0: the /capability `transports` block, or None. TWIN_DOOR_URL is the door's public address
+    (wss://twin.<worker>.isle); a worker with no door configured advertises nothing and callers keep plain TCP."""
+    base = os.environ.get('TWIN_DOOR_URL', '').strip().rstrip('/')
+    if not re.fullmatch(r'wss?://[A-Za-z0-9.-]+(:\d+)?', base):
+        return None
+    return {'ctl': base + '/sessions/{id}/ctl', 'uart': base + '/sessions/{id}/uart'}
+
+
 class Reaper:
     """falcon middleware: every request first reaps expired sessions."""
     def process_request(self, req, resp):
@@ -303,4 +336,5 @@ def _loop():
 def add_routes(app):
     app.add_route('/sessions', Sessions())
     app.add_route('/sessions/{sid}', Session())
+    app.add_route('/sessions/{sid}/check', Check())
     threading.Thread(target=_loop, daemon=True, name='session-reaper').start()
