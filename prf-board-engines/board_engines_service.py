@@ -36,7 +36,9 @@ ENGINES = {'avr-gcc': 'avr-gcc', 'avr-objcopy': 'avr-objcopy', 'avr-size': 'avr-
            'avr-objdump': 'avr-objdump', 'avr-nm': 'avr-nm', 'vcd-window': 'polari-vcd-window',
            # ucd-0f: the build systems — a project's `make` alone and the exported project's `cmake -P polari-build.cmake` (both
            # ARGV-only with the project files round-tripped; the script's outputs land beside the inputs, so they come back)
-           'make': 'make', 'cmake': 'cmake'}
+           'make': 'make', 'cmake': 'cmake',
+           # hal-4 (2026-11-13): the RISC-V C compiler (multilib rv32 / rv64), for generated HAL headers and RISC-V firmware
+           'riscv-gcc': 'riscv64-unknown-elf-gcc'}
 VERSION_ARGS = {'avrdude': ['-?'], 'simavr': ['--list-cores'], 'avr-twin': None}
 #: the ceiling for ONE /run's outputs — files + stdout + stderr together (WORKER_MAX_MB, default 16 MB). Until sc-2 the
 #: worker kept only the last 20 000 characters of stdout/stderr, so `avr-objdump -d` of the UNO firmware (≈ 87 kB) lost
@@ -98,6 +100,9 @@ class Capability:
                       'engines': {e: {'available': bool(shutil.which(b)), 'version': _version(e), 'binary': b} for e, b in ENGINES.items()},
                       'sessions': board_sessions.info(),
                       'protocol': 'POST /run {engine, args, files, files_b64, timeout} — argv only, files round-trip; never a flash'}
+        door = board_sessions.transports()   # td-0: present only when this worker has a twin door (TWIN_DOOR_URL)
+        if door:
+            resp.media['transports'] = door
 
 
 class SystemInfo:

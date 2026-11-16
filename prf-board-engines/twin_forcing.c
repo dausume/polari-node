@@ -277,6 +277,37 @@ static int parse_pin_spec(const char *s, char *port, int *bit)
     return 0;
 }
 
+/* A level DRIVEN onto a port pin from outside (the control channel's "set", --pin-at, --wire). Raising the pin IRQ alone
+ * does not hold: on every write to PORTx or DDRx simavr recomputes each INPUT pin of that port, and a pin whose pull-up
+ * is on goes back to 1 unless the port has been told an external level stands on it (avr_ioport.c,
+ * avr_ioport_update_irqs; AVR_IOCTL_IOPORT_SET_EXTERNAL). Seen live 2026-11-15: a button on PD2 (pull-up on) pressed
+ * with set PD2=0 read 1 again at the firmware's next PORTD write, three cycles later. So the level is registered with
+ * the port first - the whole port's mask every time, because simavr 1.6 REPLACES its mask on this ioctl - and then
+ * raised. It stands until the next drive of the same pin. A pin the firmware makes an OUTPUT is the port's, as before. */
+static uint8_t g_ext_mask[3], g_ext_value[3];   /* ports B, C, D */
+
+static void drive_pin(avr_t *avr, char port, int bit, int level)
+{
+    int k = port - 'B';
+    if (k < 0 || k > 2 || bit < 0 || bit > 7) return;
+    g_ext_mask[k] |= (uint8_t)(1u << bit);
+    if (level) g_ext_value[k] |= (uint8_t)(1u << bit);
+    else g_ext_value[k] &= (uint8_t)~(1u << bit);
+    avr_ioport_external_t e = { .name = (unsigned)port, .mask = g_ext_mask[k], .value = g_ext_value[k] };
+    avr_ioctl(avr, AVR_IOCTL_IOPORT_SET_EXTERNAL(port), &e);
+    avr_raise_irq(port_irq(avr, port, bit), level ? 1u : 0u);
+}
+
+/* "PD2" + a level → driven and held (see drive_pin); -1 when the spec is not a pin of this mcu */
+int forcing_drive_pin(avr_t *avr, const char *spec, int level)
+{
+    char port;
+    int bit;
+    if (parse_pin_spec(spec, &port, &bit) < 0 || !port_irq(avr, port, bit)) return -1;
+    drive_pin(avr, port, bit, level);
+    return 0;
+}
+
 /* sim-0: a pin spec ("PD2") → its ioport pin irq, or NULL (not B/C/D 0..7, or the mcu has no such port): the control
  * channel's "set" and "watch" use the same irq --pin-at raises */
 struct avr_irq_t *forcing_pin_irq(avr_t *avr, const char *spec)
@@ -589,7 +620,7 @@ static void wire_notify(struct avr_irq_t *irq, uint32_t value, void *param)
     if (v == w->last_level) return;
     w->last_level = v;
     w->edges++;
-    avr_raise_irq(w->dst_irq, (uint32_t)v);
+    drive_pin(g_av, w->dst_port, w->dst_bit, v);
     printf("{\"t\":\"wire-edge\",\"src\":\"P%c%d\",\"dst\":\"P%c%d\",\"v\":%d,\"cycle\":%llu}\n",
            w->src_port, w->src_bit, w->dst_port, w->dst_bit, v, (unsigned long long)g_av->cycle);
     fflush(stdout);
@@ -710,7 +741,7 @@ void forcing_step(avr_t *avr)
     for (int k = 0; k < g_npinat; k++) {   /* ucd-0d: --pin-at — a level forced onto a port pin, not a vector */
         pinat_t *q = &g_pinat[k];
         if (q->done || avr->cycle < q->cycle) continue;
-        avr_raise_irq(q->irq, (uint32_t)q->level);
+        drive_pin(avr, q->port, q->bit, q->level);
         q->done = 1; q->done_cycle = avr->cycle;
         g_forced_now = 1;
         trigger(avr);
