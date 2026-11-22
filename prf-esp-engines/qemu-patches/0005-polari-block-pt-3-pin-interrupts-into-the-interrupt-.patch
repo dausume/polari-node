@@ -1,0 +1,199 @@
+From 168c032dabd649498e527d4ed98cfed6ae09d630 Mon Sep 17 00:00:00 2001
+From: Polari Suite <polari@localhost.invalid>
+Date: Sat, 14 Nov 2026 01:33:58 -0500
+Subject: [PATCH 5/7] polari-block pt-3: pin interrupts into the interrupt
+ matrix; late stamped inputs logged
+
+- An input edge (level AND input enable) of the kind INT_TYPE names (edge_sense rising / falling / any) sets
+  the pad's status bit through edge_flag's stored field; a level trigger (level_sense low / high) keeps setting
+  it while the level holds; another nonzero INT_TYPE is logged unmodelled.
+- CPU status = status AND bit `from.enable_bit` of edge_mask (C3 GPIO_PCPU_INT = STATUS AND INT_ENA bit 0, what
+  ESP-IDF's ISR reads); the line into the interrupt matrix (ETS_GPIO_INTR_SOURCE 16) is the OR, re-evaluated
+  after every write, so the ISR's STATUS_W1TC clear lowers it.
+- a stamped input already past when read is applied at once and logged once as late (econ, pt-2 review).
+Gate (econ's images, presses stamped on GPIO3 at 300 / 450 / 600 ms, 80 ms held): IDF and HAL builds both end
+"@END presses=3 led_on=1", 3 interrupts, the LED toggled at 300 / 450 / 600 ms; a repeat is trace-identical;
+no press and presses on GPIO7 give presses=0, 0 interrupts, no LED edge.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/misc/polari_block.c         | 82 ++++++++++++++++++++++++++++++++--
+ include/hw/misc/polari_block.h |  8 +++-
+ 2 files changed, 85 insertions(+), 5 deletions(-)
+
+diff --git a/hw/misc/polari_block.c b/hw/misc/polari_block.c
+index 6bda87c..00391f9 100644
+--- a/hw/misc/polari_block.c
++++ b/hw/misc/polari_block.c
+@@ -8,7 +8,9 @@
+  * pt-2: a `pinbank` device computes each pad's level from its roles (PIN_TWIN_PLAN.md §2) after every write and every outside
+  * input, sends each change on the pin channel (-global polari-block.chardev=ID: "@<virtual ns> <pin> 0|1|z"), takes outside
+  * levels from it ("<pin> 0|1|z" now, or "@<virtual ns> <pin> 0|1|z" applied by a virtual-time timer, so a press lands on the
+- * same instruction every run), and keeps the input register = level AND pad input enable. Interrupts are pt-3.
++ * same instruction every run), and keeps the input register = level AND pad input enable.
++ * pt-3: an edge / level of the kind INT_TYPE names sets the status bit; the CPU status = status AND the enable bit; the line into
++ * the interrupt matrix (C3: source 16) is the OR of the CPU status, re-evaluated after every write (a W1TC clear lowers it).
+  *
+  * Copyright (c) 2026 Polari contributors
+  *
+@@ -194,9 +196,50 @@ static void pin_emit(PolariBlockState *s, int n, char v)
+     }
+ }
+ 
++/* pt-3: an edge / level of the kind INT_TYPE names sets the pad's status bit (edge_flag's stored field); the CPU status reads
++ * status AND the per-pin enable bit (interrupt_status_cpu.from); the line into the interrupt matrix is the OR of the CPU status */
++static void irq_update(PolariBlockState *s, const bool *rose, const bool *fell)
++{
++    bool any = false;
++    for (int n = 0; n < s->npins; n++) {
++        PolariPin *p = &s->pins[n];
++        uint32_t t = fget(s, p->role[PR_EDGE_SENSE]);
++        bool hit = false;
++        if (t == s->v_rising) {
++            hit = rose && rose[n];
++        } else if (t == s->v_falling) {
++            hit = fell && fell[n];
++        } else if (t == s->v_any) {
++            hit = (rose && rose[n]) || (fell && fell[n]);
++        } else if (t == s->v_low) {
++            hit = !p->in;               /* a level trigger keeps setting the bit while the level holds */
++        } else if (t == s->v_high) {
++            hit = p->in;
++        } else if (t != 0 && !p->warned_type) {
++            qemu_log_mask(LOG_UNIMP, "polari-block: GPIO%d INT_TYPE %u is no edge_sense / level_sense value: not modelled\n", n, t);
++            p->warned_type = true;
++            s->unmodelled++;
++        }
++        if (hit) {
++            fset(s, p->role[PR_EDGE_FLAG], 1);
++        }
++        bool cpu = fget(s, p->role[PR_EDGE_FLAG]) && ((fget(s, p->role[PR_EDGE_MASK]) >> s->cpu_enable_bit) & 1);
++        fset(s, p->role[PR_CPU_STATUS], cpu);
++        any |= cpu;
++    }
++    if (any != s->irq_level) {
++        s->irq_level = any;
++        if (any) {
++            s->interrupts++;
++        }
++        qemu_set_irq(s->irq, any);
++    }
++}
++
+ /* recompute every pad; emit each change; the input register reads level AND the pad's input enable */
+ static void pins_update(PolariBlockState *s, bool emit_all)
+ {
++    bool rose[POLARI_MAX_PINS] = { false }, fell[POLARI_MAX_PINS] = { false };
+     for (int n = 0; n < s->npins; n++) {
+         PolariPin *p = &s->pins[n];
+         char v = pin_level(s, n);
+@@ -207,8 +250,15 @@ static void pins_update(PolariBlockState *s, bool emit_all)
+             p->level = v;
+             pin_emit(s, n, v);
+         }
+-        fset(s, p->role[PR_INPUT], (v == '1' && fget(s, p->role[PR_PAD_IE]) == s->v_ie_on) ? 1 : 0);
++        bool in = v == '1' && fget(s, p->role[PR_PAD_IE]) == s->v_ie_on;
++        if (!emit_all) {
++            rose[n] = in && !p->in;
++            fell[n] = !in && p->in;
++        }
++        p->in = in;
++        fset(s, p->role[PR_INPUT], in ? 1 : 0);
+     }
++    irq_update(s, rose, fell);
+ }
+ 
+ static int pb_can_receive(void *opaque)
+@@ -251,6 +301,13 @@ static void input_queue(PolariBlockState *s, int64_t at, int pin, char v)
+                       POLARI_MAX_INPUTS, pin, at);
+         return;
+     }
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    if (at < now && !s->warned_late) {
++        /* econ, pt-2 review: a live channel can deliver a stamp already past; applied at once, but never silently */
++        qemu_log_mask(LOG_GUEST_ERROR, "polari-block: stamped input GPIO%d @%" PRId64 " arrived late by %" PRId64 " ns: applied now "
++                      "(this run is not deterministic)\n", pin, at, now - at);
++        s->warned_late = true;
++    }
+     int k = s->ninputs;
+     while (k > 0 && s->inputs[k - 1].at_ns > at) {      /* stable: equal stamps keep their arrival order */
+         s->inputs[k] = s->inputs[k - 1];
+@@ -299,7 +356,7 @@ static void pb_write(void *opaque, hwaddr addr, uint64_t value, unsigned int siz
+     PolariRun *run = opaque;
+     reg_write(run->s, &run->s->regs[run->first + (addr >> 2)], (uint32_t)value);
+     if (run->s->npins) {
+-        pins_update(run->s, false);
++        pins_update(run->s, false);   /* also re-evaluates the status / CPU status / line: a W1TC clear lowers it */
+     }
+ }
+ 
+@@ -452,6 +509,21 @@ static void load_pinbank(PolariBlockState *s, QDict *dev, Error **errp)
+     if (!*errp) s->v_en_inverted = role_value(roles, "enable_invert", "inverted", errp);
+     if (!*errp) s->v_ie_on = role_value(roles, "pad_input_enable", "on", errp);
+     if (!*errp) s->v_oen_gpio = role_value(roles, "output_enable_source", "gpio_enable", errp);
++    if (!*errp) s->v_rising = role_value(roles, "edge_sense", "rising", errp);
++    if (!*errp) s->v_falling = role_value(roles, "edge_sense", "falling", errp);
++    if (!*errp) s->v_any = role_value(roles, "edge_sense", "any_edge", errp);
++    if (!*errp) s->v_low = role_value(roles, "level_sense", "low_level", errp);
++    if (!*errp) s->v_high = role_value(roles, "level_sense", "high_level", errp);
++    if (!*errp) {
++        QDict *from = qdict_get_qdict(qdict_get_qdict(roles, "interrupt_status_cpu"), "from");
++        QList *pp = from ? qdict_get_qlist(from, "per_pin") : NULL;
++        QDict *p0 = pp ? qobject_to(QDict, qlist_peek(pp)) : NULL;
++        QList *en = p0 ? qdict_get_qlist(p0, "enable") : NULL;
++        s->cpu_enable_bit = en ? (int)list_int(en, 2) : -1;
++        if (s->cpu_enable_bit < 0 || s->cpu_enable_bit > 31) {
++            error_setg(errp, "polari-block: interrupt_status_cpu.from gives no enable bit");
++        }
++    }
+ }
+ 
+ static bool load_layout(PolariBlockState *s, Error **errp)
+@@ -614,7 +686,7 @@ static void pb_exit(Notifier *n, void *data)
+         fprintf(fp, "0x%08x %s 0x%08x%s\n", r->addr, r->name, r->value & read_mask(r), r->value == r->reset ? "" : " changed");
+     }
+     if (s->npins) {
+-        fprintf(fp, "# pins (level; edges %" PRIu64 "):", s->edges);
++        fprintf(fp, "# pins (level; edges %" PRIu64 "; interrupts %" PRIu64 "):", s->edges, s->interrupts);
+         for (int k = 0; k < s->npins; k++) {
+             fprintf(fp, " %d=%c", k, s->pins[k].level);
+         }
+@@ -659,7 +731,9 @@ static void pb_reset_hold(Object *obj, ResetType type)
+     if (s->npins) {
+         for (int n = 0; n < s->npins; n++) {
+             s->pins[n].level = '?';
++            s->pins[n].in = false;
+         }
++        s->irq_level = false;
+         pins_update(s, true);   /* every pad's reset level, once, at virtual time 0 */
+     }
+ }
+diff --git a/include/hw/misc/polari_block.h b/include/hw/misc/polari_block.h
+index 6299d02..12ed660 100644
+--- a/include/hw/misc/polari_block.h
++++ b/include/hw/misc/polari_block.h
+@@ -65,7 +65,8 @@ typedef struct PolariPin {
+     uint32_t gpio_functions;    /* bit k set = pad function k is this pad's GPIO */
+     char level;                 /* '0' '1' 'z': the pad's level as last computed */
+     char ext;                   /* '0' '1' 'z': driven from outside (the pin channel); 'z' = not driven */
+-    bool warned_route, warned_pulls, warned_function, warned_contention;
++    bool warned_route, warned_pulls, warned_function, warned_contention, warned_type;
++    bool in;                    /* the input signal as last seen by the interrupt logic (level AND input enable) */
+ } PolariPin;
+ 
+ /* a stamped outside input waiting for its virtual time (econ, pt-2 review: presses must land on the same instruction every run) */
+@@ -91,6 +92,11 @@ struct PolariBlockState {
+     int npins;
+     PolariPin pins[POLARI_MAX_PINS];
+     uint32_t v_gpio_out, v_open_drain, v_out_inverted, v_en_inverted, v_ie_on, v_oen_gpio;
++    /* pt-3: interrupts */
++    uint32_t v_rising, v_falling, v_any, v_low, v_high;   /* INT_TYPE codes from edge_sense / level_sense */
++    int cpu_enable_bit;                                   /* interrupt_status_cpu.from.enable_bit: the bit of edge_mask the CPU status ANDs */
++    bool irq_level, warned_late;
++    uint64_t interrupts;                                  /* rising edges of the line into the interrupt matrix */
+     CharBackend chr;            /* the pin channel: out "@<virtual ns> <pin> 0|1|z", in "<pin> 0|1|z" */
+     char rx[64];
+     int rxn;
+-- 
+2.34.1
+

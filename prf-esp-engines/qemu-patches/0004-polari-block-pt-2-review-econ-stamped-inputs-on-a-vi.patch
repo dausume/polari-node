@@ -1,0 +1,168 @@
+From 691d6b553e85bd55ca17e35291536cfc9c03571f Mon Sep 17 00:00:00 2001
+From: Polari Suite <polari@localhost.invalid>
+Date: Sat, 14 Nov 2026 01:06:03 -0500
+Subject: [PATCH 4/7] polari-block pt-2 review (econ): stamped inputs on a
+ virtual-time timer; non-GPIO pad functions and contention logged
+
+- "@<virtual ns> <pin> 0|1|z" is queued (stable by stamp) and applied by a QEMU_CLOCK_VIRTUAL timer, so a
+  press lands on the same instruction every run; "<pin> 0|1|z" still applies now. Measured: SENSE driven at
+  700 / released at 800 ms shows at exactly 700000000 / 800000000 ns, and two runs give the same pin log.
+- a pad on a function that is not one of its GPIO functions is logged unmodelled once (the light at reset:
+  4-7 JTAG, 12-17 flash, 20-21 UART - Table 5.12-1's function-0 pads exactly);
+- a pad the chip drives while the outside drives the other level: LOG_GUEST_ERROR once ("GPIO0 driven 0 by
+  the chip and 1 from outside"); the chip's level is kept.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/misc/polari_block.c         | 69 ++++++++++++++++++++++++++++++++--
+ include/hw/misc/polari_block.h | 14 ++++++-
+ 2 files changed, 79 insertions(+), 4 deletions(-)
+
+diff --git a/hw/misc/polari_block.c b/hw/misc/polari_block.c
+index 53b5ba5..6bda87c 100644
+--- a/hw/misc/polari_block.c
++++ b/hw/misc/polari_block.c
+@@ -7,7 +7,8 @@
+  * Writes are interpreted by access word; a w1-set / w1-clear field acts on the register its row names (acts_on).
+  * pt-2: a `pinbank` device computes each pad's level from its roles (PIN_TWIN_PLAN.md §2) after every write and every outside
+  * input, sends each change on the pin channel (-global polari-block.chardev=ID: "@<virtual ns> <pin> 0|1|z"), takes outside
+- * levels from it ("<pin> 0|1|z"), and keeps the input register = level AND pad input enable. Interrupts are pt-3.
++ * levels from it ("<pin> 0|1|z" now, or "@<virtual ns> <pin> 0|1|z" applied by a virtual-time timer, so a press lands on the
++ * same instruction every run), and keeps the input register = level AND pad input enable. Interrupts are pt-3.
+  *
+  * Copyright (c) 2026 Polari contributors
+  *
+@@ -154,10 +155,22 @@ static char pin_level(PolariBlockState *s, int n)
+     if (fget(s, p->role[PR_ENABLE_INVERT]) == s->v_en_inverted) {
+         en = !en;
+     }
++    if (!gpio_pad && !p->warned_function) {
++        /* the pad is on a function that is not this pad's GPIO (C3 GPIO20 / 21 at reset: U0RXD / U0TXD): not modelled */
++        qemu_log_mask(LOG_UNIMP, "polari-block: GPIO%d is on pad function %u, not one of its GPIO functions: not modelled\n", n, func);
++        p->warned_function = true;
++        s->unmodelled++;
++    }
+     if (gpio_pad && plain && en) {
+         uint32_t out = fget(s, p->role[PR_OUTPUT]) ^ (fget(s, p->role[PR_OUTPUT_INVERT]) == s->v_out_inverted ? 1 : 0);
+         if (fget(s, p->role[PR_OUTPUT_DRIVER]) != s->v_open_drain || !out) {
+-            return out ? '1' : '0';
++            char drv = out ? '1' : '0';
++            if (p->ext != 'z' && p->ext != drv && !p->warned_contention) {
++                /* a button wired to an output pin: the twin shows the mistake (the chip's level is kept) */
++                qemu_log_mask(LOG_GUEST_ERROR, "polari-block: GPIO%d driven %c by the chip and %c from outside\n", n, drv, p->ext);
++                p->warned_contention = true;
++            }
++            return drv;
+         }
+         /* open drain, a 1: the pad is released - falls to the outside level / the pull below */
+     }
+@@ -203,6 +216,51 @@ static int pb_can_receive(void *opaque)
+     return 1;
+ }
+ 
++static void input_arm(PolariBlockState *s)
++{
++    if (s->ninputs) {
++        timer_mod(s->input_timer, s->inputs[0].at_ns);
++    } else {
++        timer_del(s->input_timer);
++    }
++}
++
++/* the virtual-time timer: apply every stamped input that is due, in order */
++static void input_due(void *opaque)
++{
++    PolariBlockState *s = opaque;
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    int k = 0;
++    while (k < s->ninputs && s->inputs[k].at_ns <= now) {
++        s->pins[s->inputs[k].pin].ext = s->inputs[k].v;
++        k++;
++    }
++    if (k) {
++        memmove(s->inputs, s->inputs + k, (s->ninputs - k) * sizeof(s->inputs[0]));
++        s->ninputs -= k;
++        pins_update(s, false);
++    }
++    input_arm(s);
++}
++
++/* "@<virtual ns> <pin> <v>": queued, applied at that virtual time (a time already past applies at once); "<pin> <v>": now */
++static void input_queue(PolariBlockState *s, int64_t at, int pin, char v)
++{
++    if (s->ninputs == POLARI_MAX_INPUTS) {
++        qemu_log_mask(LOG_GUEST_ERROR, "polari-block: more than %d pending stamped inputs: GPIO%d at %" PRId64 " dropped\n",
++                      POLARI_MAX_INPUTS, pin, at);
++        return;
++    }
++    int k = s->ninputs;
++    while (k > 0 && s->inputs[k - 1].at_ns > at) {      /* stable: equal stamps keep their arrival order */
++        s->inputs[k] = s->inputs[k - 1];
++        k--;
++    }
++    s->inputs[k] = (PolariInput){ at, pin, v };
++    s->ninputs++;
++    input_arm(s);
++}
++
+ static void pb_receive(void *opaque, const uint8_t *buf, int size)
+ {
+     PolariBlockState *s = opaque;
+@@ -216,7 +274,11 @@ static void pb_receive(void *opaque, const uint8_t *buf, int size)
+         s->rxn = 0;
+         int n;
+         char v;
+-        if (sscanf(s->rx, "%d %c", &n, &v) == 2 && n >= 0 && n < s->npins && (v == '0' || v == '1' || v == 'z')) {
++        int64_t at;
++        if (s->rx[0] == '@' && sscanf(s->rx + 1, "%" SCNd64 " %d %c", &at, &n, &v) == 3 && n >= 0 && n < s->npins
++            && (v == '0' || v == '1' || v == 'z')) {
++            input_queue(s, at, n, v);
++        } else if (s->rx[0] != '@' && sscanf(s->rx, "%d %c", &n, &v) == 2 && n >= 0 && n < s->npins && (v == '0' || v == '1' || v == 'z')) {
+             s->pins[n].ext = v;
+             pins_update(s, false);
+         } else if (s->rx[0]) {
+@@ -578,6 +640,7 @@ static void pb_realize(DeviceState *dev, Error **errp)
+         memory_region_add_subregion_overlap(get_system_memory(), run->base, &run->mr, POLARI_BLOCK_PRIORITY);
+     }
+     if (s->npins) {
++        s->input_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, input_due, s);
+         qemu_chr_fe_set_handlers(&s->chr, pb_can_receive, pb_receive, NULL, NULL, s, NULL, true);
+     }
+     if (s->dump && *s->dump) {
+diff --git a/include/hw/misc/polari_block.h b/include/hw/misc/polari_block.h
+index 96cd52e..6299d02 100644
+--- a/include/hw/misc/polari_block.h
++++ b/include/hw/misc/polari_block.h
+@@ -65,9 +65,18 @@ typedef struct PolariPin {
+     uint32_t gpio_functions;    /* bit k set = pad function k is this pad's GPIO */
+     char level;                 /* '0' '1' 'z': the pad's level as last computed */
+     char ext;                   /* '0' '1' 'z': driven from outside (the pin channel); 'z' = not driven */
+-    bool warned_route, warned_pulls;
++    bool warned_route, warned_pulls, warned_function, warned_contention;
+ } PolariPin;
+ 
++/* a stamped outside input waiting for its virtual time (econ, pt-2 review: presses must land on the same instruction every run) */
++typedef struct PolariInput {
++    int64_t at_ns;
++    int pin;
++    char v;
++} PolariInput;
++
++#define POLARI_MAX_INPUTS 256
++
+ struct PolariBlockState {
+     SysBusDevice parent_obj;
+     char *layout;               /* path of the layout JSON (property) */
+@@ -85,6 +94,9 @@ struct PolariBlockState {
+     CharBackend chr;            /* the pin channel: out "@<virtual ns> <pin> 0|1|z", in "<pin> 0|1|z" */
+     char rx[64];
+     int rxn;
++    PolariInput inputs[POLARI_MAX_INPUTS];   /* pending stamped inputs, sorted by at_ns */
++    int ninputs;
++    QEMUTimer *input_timer;
+     uint64_t edges;
+     qemu_irq irq;
+     Notifier exit_notifier;
+-- 
+2.34.1
+

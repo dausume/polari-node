@@ -1,0 +1,67 @@
+From fc5b748c85534ab3839eaf7fc9c958a2159e5844 Mon Sep 17 00:00:00 2001
+From: Polari Suite <polari@localhost.invalid>
+Date: Sat, 14 Nov 2026 00:57:35 -0500
+Subject: [PATCH 2/7] polari-block: word access only; rw-sc counted as
+ unmodelled; the alias-reads-0 assumption labelled (econ's pt-1b review)
+
+- .valid.min_access_size 4: with 1, QEMU's access_with_adjusted_size (system/memory.c:563-573) hands pb_write a
+  byte at its original address, unshifted, as a 4-byte write, zeroing the other bytes of every rw field. A guest
+  byte / halfword access is now refused and logged as a guest error. The light firmware does none (0 invalid
+  accesses); the refusal path itself is not exercised by a guest yet.
+- rw-sc: stored, its self-clear not modelled, so a write counts as unmodelled.
+- alias fields reading 0 is an assumption (the TRM defines WT for writes only, Glossary p.894), now said so.
+Gate re-run: trace through @END f8495d14 unchanged, UART a prefix of the one stream, fold == read-back on 78.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/misc/polari_block.c | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/hw/misc/polari_block.c b/hw/misc/polari_block.c
+index a74c3ed..37e28a1 100644
+--- a/hw/misc/polari_block.c
++++ b/hw/misc/polari_block.c
+@@ -39,7 +39,10 @@ static uint32_t field_mask(const PolariField *f)
+     return (f->width >= 32 ? 0xFFFFFFFFu : ((1u << f->width) - 1u)) << f->lo;
+ }
+ 
+-/* the bits a read returns: alias and strobe fields read 0 (they store nothing) */
++/* the bits a read returns: alias and strobe fields read 0 (they store nothing). That alias fields READ 0 is an assumption, not a
++ * cited fact: the C3 TRM defines WT only for writes (Glossary p.894) and no ESP-IDF code reads W1TS / W1TC (econ, pt-1b review).
++ * Read and write meanings are one access word per field here; a field whose read and write differ (AVR PINx: reads the pins, a
++ * written 1 toggles PORTx) needs them separable before such a layout is hosted. */
+ static uint32_t read_mask(const PolariReg *r)
+ {
+     uint32_t m = 0;
+@@ -61,8 +64,15 @@ static void reg_write(PolariBlockState *s, PolariReg *r, uint32_t v)
+         uint32_t m = field_mask(f);
+         switch (f->access) {
+         case PB_RW:
++            keep = (keep & ~m) | (v & m);
++            break;
+         case PB_RWSC:
++            /* stored, but the hardware's self-clear is not modelled: counted as unmodelled, never presented as modelled */
+             keep = (keep & ~m) | (v & m);
++            if (v & m) {
++                qemu_log_mask(LOG_UNIMP, "polari-block: %s.%s is rw-sc; its self-clear is not modelled\n", r->name, f->name);
++                s->unmodelled++;
++            }
+             break;
+         case PB_R:
+             break;
+@@ -108,8 +118,11 @@ static const MemoryRegionOps pb_ops = {
+     .read = pb_read,
+     .write = pb_write,
+     .endianness = DEVICE_LITTLE_ENDIAN,
++    /* word access only: with a smaller valid size QEMU would hand pb_write the byte at its original address, unshifted, and
++     * rewrite the other bytes of every rw field to 0 (econ, pt-1b review). The TRM does not promise sub-word APB writes, so a guest
++     * byte / halfword access is refused and logged as a guest error instead of silently corrupting the register. */
+     .impl = { .min_access_size = 4, .max_access_size = 4 },
+-    .valid = { .min_access_size = 1, .max_access_size = 4 },
++    .valid = { .min_access_size = 4, .max_access_size = 4 },
+ };
+ 
+ /* ---- the layout */
+-- 
+2.34.1
+

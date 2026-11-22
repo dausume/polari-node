@@ -1,0 +1,77 @@
+From 91cbb571ff9b6f1164d5ded517b288765416333b Mon Sep 17 00:00:00 2001
+From: Polari Suite <polari@localhost.invalid>
+Date: Sat, 14 Nov 2026 01:36:12 -0500
+Subject: [PATCH 6/7] polari-block pt-3 review (econ): reset lowers the line;
+ enable bits past the CPU bit logged (C3 NMI); level basis cited
+
+- reset now calls qemu_set_irq(irq, 0): clearing irq_level alone never told the interrupt matrix, so a reset
+  mid-ISR could leave source 16 asserted. The control (a reset with the line high) needs firmware that
+  enables a pin interrupt and never clears it: pt-5's bare-C firmware; not exercised by the light.
+- an edge_mask bit other than from.enable_bit (C3 INT_ENA bit 1 = NMI) is logged unmodelled once: TRM v1.1
+  deleted GPIO_PCPU_NMI_INT_REG and its map, so there is no documented path.
+- the level-trigger re-set is cited as inferred from ESP-IDF gpio.c:491-504; the TRM is silent.
+pt-3 gate re-run: every arm's trace through @END unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/misc/polari_block.c         | 16 ++++++++++++++--
+ include/hw/misc/polari_block.h |  2 +-
+ 2 files changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/hw/misc/polari_block.c b/hw/misc/polari_block.c
+index 00391f9..787af08 100644
+--- a/hw/misc/polari_block.c
++++ b/hw/misc/polari_block.c
+@@ -212,7 +212,9 @@ static void irq_update(PolariBlockState *s, const bool *rose, const bool *fell)
+         } else if (t == s->v_any) {
+             hit = (rose && rose[n]) || (fell && fell[n]);
+         } else if (t == s->v_low) {
+-            hit = !p->in;               /* a level trigger keeps setting the bit while the level holds */
++            /* a level trigger keeps setting the bit while the level holds - inferred from ESP-IDF gpio.c:491-504 (gpio_isr_loop
++             * clears edge types on entry and every other type after the handler); the TRM is silent (Register 5.14 p.184) */
++            hit = !p->in;
+         } else if (t == s->v_high) {
+             hit = p->in;
+         } else if (t != 0 && !p->warned_type) {
+@@ -223,7 +225,16 @@ static void irq_update(PolariBlockState *s, const bool *rose, const bool *fell)
+         if (hit) {
+             fset(s, p->role[PR_EDGE_FLAG], 1);
+         }
+-        bool cpu = fget(s, p->role[PR_EDGE_FLAG]) && ((fget(s, p->role[PR_EDGE_MASK]) >> s->cpu_enable_bit) & 1);
++        uint32_t mask = fget(s, p->role[PR_EDGE_MASK]);
++        if ((mask & ~(1u << s->cpu_enable_bit)) && !s->warned_nmi) {
++            /* C3: INT_ENA bit 1 = the NMI enable (IDF GPIO_LL_PRO_CPU_NMI_INTR_ENA); TRM v1.1 deleted GPIO_PCPU_NMI_INT_REG and its map
++             * (revision history), so there is no documented path to model (econ, pt-3 review) */
++            qemu_log_mask(LOG_UNIMP, "polari-block: GPIO%d enable bits 0x%x beyond bit %d (C3 INT_ENA bit 1 = NMI): no documented path in "
++                          "TRM v1.4\n", n, mask, s->cpu_enable_bit);
++            s->warned_nmi = true;
++            s->unmodelled++;
++        }
++        bool cpu = fget(s, p->role[PR_EDGE_FLAG]) && ((mask >> s->cpu_enable_bit) & 1);
+         fset(s, p->role[PR_CPU_STATUS], cpu);
+         any |= cpu;
+     }
+@@ -734,6 +745,7 @@ static void pb_reset_hold(Object *obj, ResetType type)
+             s->pins[n].in = false;
+         }
+         s->irq_level = false;
++        qemu_set_irq(s->irq, 0);    /* a reset mid-ISR must not leave the interrupt matrix's source asserted (econ, pt-3 review) */
+         pins_update(s, true);   /* every pad's reset level, once, at virtual time 0 */
+     }
+ }
+diff --git a/include/hw/misc/polari_block.h b/include/hw/misc/polari_block.h
+index 12ed660..d2ad628 100644
+--- a/include/hw/misc/polari_block.h
++++ b/include/hw/misc/polari_block.h
+@@ -95,7 +95,7 @@ struct PolariBlockState {
+     /* pt-3: interrupts */
+     uint32_t v_rising, v_falling, v_any, v_low, v_high;   /* INT_TYPE codes from edge_sense / level_sense */
+     int cpu_enable_bit;                                   /* interrupt_status_cpu.from.enable_bit: the bit of edge_mask the CPU status ANDs */
+-    bool irq_level, warned_late;
++    bool irq_level, warned_late, warned_nmi;
+     uint64_t interrupts;                                  /* rising edges of the line into the interrupt matrix */
+     CharBackend chr;            /* the pin channel: out "@<virtual ns> <pin> 0|1|z", in "<pin> 0|1|z" */
+     char rx[64];
+-- 
+2.34.1
+

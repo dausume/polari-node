@@ -8,6 +8,7 @@ board is the ESP32-C3). It holds the C3's open toolchain, its flasher and its tw
 | ESP-IDF | **v5.5.5** (tag → commit `b774170ff46c393eeb5e495ea37936038d3f4f4f`, asserted at build) | Apache-2.0 (FreeRTOS-Kernel inside: MIT) | the build system and the RTOS; the apps are C (RULE 2) |
 | riscv32-esp-elf | esp-14.2.0_20260121 (sha256 `b3fce4b0…`, from ESP-IDF's tools.json) | GPL-3.0 with the GCC runtime exception | the C compiler; **one multilib kept**: `rv32imc_zicsr_zifencei/ilp32` (the C3's, asserted with `-print-multi-directory`) |
 | qemu-riscv32 (Espressif fork) | **esp_develop_9.2.2_20260417** (sha256 `547f03e0…`, from tools.json) | GPL-2.0-only (espressif/qemu `COPYING`) | the twin: `-machine esp32c3` |
+| qemu-riscv32 + `polari-block` (`qemu-patches/`) | the same fork source, tag `esp-develop-9.2.2-20260417` → commit `40edccac415693c5130f91c01d84176ae6008566` (asserted at build) + `qemu-patches/0001..0007` | GPL-2.0-only; our files GPL-2.0-or-later | pt-4, the **pin model**: installed beside the prebuilt binary as `qemu-system-riscv32-polari`, used by `polari-c3-run --pins` only |
 | esptool | 4.12.0 (ESP-IDF's python env) | GPL-2.0+ | `merge_bin` for the twin's 4 MB image; `write_flash` only on the USB host (refused here) |
 | cmake / ninja | 3.30.2 / 1.12.1 (tools.json sha256) | BSD-3-Clause / Apache-2.0 | what idf.py drives |
 | `polari-idf-build` (`polari_idf_build.py`) | ours | — | `project.tar` → `idf.py build` → ELF, three images, `flash_args`, the merged image, `idf.py size --format json2`, the build's cost (wait4) |
@@ -21,6 +22,30 @@ Base: `ubuntu:24.04@sha256:a853f94d226358a79c740cfc7bce0c289748f3fe3488d921d038c
     docker compose -p esp-engines -f ../docker-compose.esp-engines.yml build     # the image (enough for a local device)
     docker compose -p esp-engines -f ../docker-compose.esp-engines.yml up -d     # the worker on :9850, for other devices
 
+## The pin model (pt-4, `AI-Notes/plans/PIN_TWIN_PLAN.md`)
+
+The prebuilt fork's `esp32c3.gpio` is a register stub (below). `qemu-patches/` adds one device, `polari-block`, to the same source: it takes a
+**device layout** exported from Polari's own chip rows (`board.custom.sim_layout.layout('esp32c3-qemu')`: the GPIO and IO_MUX registers, their
+resets, each field's access word and the roles of each pad) and answers those registers itself, above the vendor model; every other address
+falls through unchanged. With it:
+
+- `polari-c3-run IMAGE --pins layout.json` runs `qemu-system-riscv32-polari -machine esp32c3,polari-layout=…`. Out: `pins.log`, the **pin
+  channel** (`@<virtual ns> <pad> 0|1|z`, one line per pad level change, the reset levels at `@0`), and `pb-dump.txt` (final registers, pad
+  levels, edge and interrupt counts, the wires).
+- `--pins-in FILE`: what the board does to the pads, stamped in virtual time (`@<ns> <pad> 0|1|z`; a button press to ground = `0`, its release
+  = `z`, and the firmware's pull-up takes the pad back). A stamped level lands on the same instruction every run, so a run repeats byte for byte.
+- `--wires A-B,…`: pads joined on the board (the light's LED-to-sense jumper). A wired pad sees the channel's level on either end, else the
+  other end's driver, else the pulls of both ends. One wire per pad; a node of three pads is refused.
+- `--serve PORT --pins layout.json`: the pin channel is a TCP server on `PORT + 1` (`--pins-port` to choose): it sends the level lines and takes
+  `<pad> 0|1|z` lines, applied now. A client is sent every pad's current level when it connects (one client at a time); a pad driven from
+  outside stays driven after the client closes, until it is let go with `z`. `pol board twin c3 up --pins` starts this, and
+  `pol board twin c3 pins` / `pin <pad> 0|1|z` are the host end (`board.custom.twin_c3_pins`).
+- Without `--pins` nothing changes: the prebuilt binary, the same argv, the same outputs.
+- What it is not: voltages, pad driver timing, analog, a peripheral's signal on a pad (UART / LEDC / SPI outputs on a pad are logged as not
+  modelled and the pad is not driven by this device). An image without the binary refuses `--pins` in words; it never falls back to the stub.
+- **State (2026-11-22):** the device, the patches and `--pins` are proven with a hand-built binary (same source, same patches, same configure
+  flags) in a local test image; the `qemu` stage of this Dockerfile has not been built yet. A rebuilt image is what carries it to the other devices.
+
 ## Host-driven runs (smp S5, the light Mission on the C3 twin)
 
 `polari-c3-run` also takes `--rx-plan FILE` and `--boots N` (the other options are unchanged, so the sc-3 scenario runs are byte-for-byte as before):
@@ -29,7 +54,7 @@ Base: `ubuntu:24.04@sha256:a853f94d226358a79c740cfc7bce0c289748f3fe3488d921d038c
   warps (a 1.15 s run takes about 0.6-0.9 s of wall time), so a wall-clock pace would race the guest.
 - `--boots N`: N boots on the same flash copy (a power cycle each; NVS survives). `trace.log` carries `@POWER-CYCLE n` between them.
 - What the machine does NOT model: `esp32c3.gpio` is a register stub (measured 2026-10-19 with `gpio_set_level`/`gpio_get_level` under `-monitor`: `GPIO_OUT` stays 0, `GPIO_IN`
-  never moves, `qom-tree` shows no pin lines, one `sysbus-irq`). A button or an LED level cannot be reached from outside, so the light firmware keeps its pins in a RAM shim on the twin
+  never moves, `qom-tree` shows no pin lines, one `sysbus-irq`). A button or an LED level cannot be reached from outside, so on the PREBUILT binary the light firmware keeps its pins in a RAM shim on the twin (the pin model above removes that need)
   (`board/custom/firmware/esp32c3/apps/light_hal.h`, `PIN_SHIM=1`). That is a twin result, not a chip result.
 
 ## Why not `FROM espressif/idf:v5.5.5`

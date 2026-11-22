@@ -1,0 +1,558 @@
+From f4e0585564beec2ba4ddf21fe0f7fb845b3f1b92 Mon Sep 17 00:00:00 2001
+From: Polari Suite <polari@localhost.invalid>
+Date: Sat, 14 Nov 2026 00:54:21 -0500
+Subject: [PATCH 1/7] hw/misc: polari-block, a register block driven by a
+ Polari device layout; esp32c3 polari-layout property
+
+pt-1b (Polari PIN_TWIN_PLAN.md). -machine esp32c3,polari-layout=FILE creates polari-block, which maps only the
+layout's register runs at priority 1 over the vendor regions (esp32.gpio, the esp32c3.iomem catch-all), so
+every other offset falls through unchanged. Writes are interpreted by each field's access word; a w1-set /
+w1-clear field acts on the register its row names. -global polari-block.dump=FILE writes the final register
+state at exit. Its IRQ line is wired to ETS_GPIO_INTR_SOURCE (not raised until pt-3). Unset: the stock path.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/misc/meson.build            |   3 +-
+ hw/misc/polari_block.c         | 378 +++++++++++++++++++++++++++++++++
+ hw/riscv/esp32c3.c             |  27 +++
+ include/hw/misc/polari_block.h |  63 ++++++
+ 4 files changed, 470 insertions(+), 1 deletion(-)
+ create mode 100644 hw/misc/polari_block.c
+ create mode 100644 include/hw/misc/polari_block.h
+
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 4c2b5b3..e29ea0f 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -155,7 +155,8 @@ system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files(
+   'esp32c3_jtag.c',
+   'esp32c3_rtc_cntl.c',
+   'esp_hmac.c',
+-  'esp32c3_hmac.c'
++  'esp32c3_hmac.c',
++  'polari_block.c'
+ ))
+ 
+ system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files(
+diff --git a/hw/misc/polari_block.c b/hw/misc/polari_block.c
+new file mode 100644
+index 0000000..a74c3ed
+--- /dev/null
++++ b/hw/misc/polari_block.c
+@@ -0,0 +1,378 @@
++/*
++ * polari-block: a register block driven by a Polari device layout (polari-block-layout/1)
++ *
++ * pt-1b (Polari PIN_TWIN_PLAN.md): the layout, exported from Polari's chip rows (board.custom.sim_layout), lists the spans
++ * this device models, the registers in them with their resets and fields, and each field's access word. The device maps ONLY
++ * the listed runs, at a priority above the vendor model, so every other offset falls through to the vendor model unchanged.
++ * Writes are interpreted by access word; a w1-set / w1-clear field acts on the register its row names (acts_on).
++ * The pin behaviour (pinbank: pad level, the pin channel, interrupts) is pt-2 / pt-3; this stage is the register file.
++ *
++ * Copyright (c) 2026 Polari contributors
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 or
++ * (at your option) any later version.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/log.h"
++#include "qemu/error-report.h"
++#include "qapi/error.h"
++#include "qapi/qmp/qjson.h"
++#include "qapi/qmp/qdict.h"
++#include "qapi/qmp/qlist.h"
++#include "qapi/qmp/qnum.h"
++#include "qapi/qmp/qstring.h"
++#include "exec/address-spaces.h"
++#include "hw/irq.h"
++#include "hw/qdev-properties.h"
++#include "sysemu/sysemu.h"
++#include "hw/misc/polari_block.h"
++
++static const char *const ACCESS_WORDS[] = {
++    [PB_RW] = "rw", [PB_R] = "r", [PB_W1SET] = "w1-set", [PB_W1CLR] = "w1-clear", [PB_WSTROBE] = "w-strobe",
++    [PB_RW1C] = "r-w1c", [PB_RWSC] = "rw-sc", [PB_W1C] = "w1c", [PB_W0C] = "w0c",
++};
++
++static uint32_t field_mask(const PolariField *f)
++{
++    return (f->width >= 32 ? 0xFFFFFFFFu : ((1u << f->width) - 1u)) << f->lo;
++}
++
++/* the bits a read returns: alias and strobe fields read 0 (they store nothing) */
++static uint32_t read_mask(const PolariReg *r)
++{
++    uint32_t m = 0;
++    for (int i = 0; i < r->nfields; i++) {
++        PolariAccess a = r->fields[i].access;
++        if (a != PB_W1SET && a != PB_W1CLR && a != PB_WSTROBE) {
++            m |= field_mask(&r->fields[i]);
++        }
++    }
++    return m;
++}
++
++static void reg_write(PolariBlockState *s, PolariReg *r, uint32_t v)
++{
++    uint32_t keep = r->value;
++    s->writes++;
++    for (int i = 0; i < r->nfields; i++) {
++        const PolariField *f = &r->fields[i];
++        uint32_t m = field_mask(f);
++        switch (f->access) {
++        case PB_RW:
++        case PB_RWSC:
++            keep = (keep & ~m) | (v & m);
++            break;
++        case PB_R:
++            break;
++        case PB_W1SET:
++            s->regs[f->acts_on].value |= (v & m);
++            break;
++        case PB_W1CLR:
++            s->regs[f->acts_on].value &= ~(v & m);
++            break;
++        case PB_RW1C:
++        case PB_W1C:
++            keep &= ~(v & m);
++            break;
++        case PB_W0C:
++            keep &= ~(~v & m);
++            break;
++        case PB_WSTROBE:
++            if (v & m) {
++                qemu_log_mask(LOG_UNIMP, "polari-block: %s.%s strobed (no behaviour bound yet)\n", r->name, f->name);
++                s->unmodelled++;
++            }
++            break;
++        }
++    }
++    /* an alias register's own value never changes: only its target does */
++    r->value = (r->value & ~read_mask(r)) | (keep & read_mask(r));
++}
++
++static uint64_t pb_read(void *opaque, hwaddr addr, unsigned int size)
++{
++    PolariRun *run = opaque;
++    PolariReg *r = &run->s->regs[run->first + (addr >> 2)];
++    return r->value & read_mask(r);
++}
++
++static void pb_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size)
++{
++    PolariRun *run = opaque;
++    reg_write(run->s, &run->s->regs[run->first + (addr >> 2)], (uint32_t)value);
++}
++
++static const MemoryRegionOps pb_ops = {
++    .read = pb_read,
++    .write = pb_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .impl = { .min_access_size = 4, .max_access_size = 4 },
++    .valid = { .min_access_size = 1, .max_access_size = 4 },
++};
++
++/* ---- the layout */
++
++static int64_t jint(QDict *d, const char *k, Error **errp)
++{
++    ERRP_GUARD();
++    QNum *n = qobject_to(QNum, qdict_get(d, k));
++    int64_t v = 0;
++    if ((!n || !qnum_get_try_int(n, &v)) && !*errp) {
++        error_setg(errp, "polari-block layout: %s is not an integer", k);
++    }
++    return v;
++}
++
++static int reg_index(PolariBlockState *s, const char *name)
++{
++    for (int i = 0; i < s->nregs; i++) {
++        if (!strcmp(s->regs[i].name, name)) {
++            return i;
++        }
++    }
++    return -1;
++}
++
++/* the idx'th element of a JSON list of integers, or -1 */
++static int64_t list_int(QList *l, int idx)
++{
++    const QListEntry *e;
++    int i = 0;
++    QLIST_FOREACH_ENTRY(l, e) {
++        if (i++ == idx) {
++            QNum *n = qobject_to(QNum, qlist_entry_obj(e));
++            int64_t v;
++            return (n && qnum_get_try_int(n, &v)) ? v : -1;
++        }
++    }
++    return -1;
++}
++
++static bool load_layout(PolariBlockState *s, Error **errp)
++{
++    ERRP_GUARD();
++    g_autofree char *text = NULL;
++    g_autoptr(GError) gerr = NULL;
++    if (!g_file_get_contents(s->layout, &text, NULL, &gerr)) {
++        error_setg(errp, "polari-block: cannot read layout %s: %s", s->layout, gerr->message);
++        return false;
++    }
++    QObject *root = qobject_from_json(text, errp);
++    QDict *top = qobject_to(QDict, root);
++    if (!top) {
++        error_prepend(errp, "polari-block: layout %s: ", s->layout);
++        qobject_unref(root);
++        return false;
++    }
++    if (g_strcmp0(qdict_get_try_str(top, "schema"), "polari-block-layout/1")) {
++        error_setg(errp, "polari-block: layout %s is not polari-block-layout/1", s->layout);
++        qobject_unref(root);
++        return false;
++    }
++    s->sha256 = g_strdup(qdict_get_try_str(top, "sha256") ?: "");
++    QList *devices = qdict_get_qlist(top, "devices");
++    if (!devices || qlist_size(devices) != 1) {
++        error_setg(errp, "polari-block: layout %s must hold exactly one device (has %zu)", s->layout,
++                   devices ? qlist_size(devices) : 0);
++        qobject_unref(root);
++        return false;
++    }
++    QDict *dev = qobject_to(QDict, qlist_peek(devices));
++    QList *spans = qdict_get_qlist(dev, "spans");
++
++    /* pass 1: count registers and runs */
++    const QListEntry *e, *e2;
++    QLIST_FOREACH_ENTRY(spans, e) {
++        QDict *sp = qobject_to(QDict, qlist_entry_obj(e));
++        s->nregs += qlist_size(qdict_get_qlist(sp, "registers"));
++        s->nruns += qlist_size(qdict_get_qlist(sp, "map"));
++    }
++    s->regs = g_new0(PolariReg, s->nregs);
++    s->runs = g_new0(PolariRun, s->nruns);
++
++    /* pass 2: registers (names first, so acts_on can resolve forward) */
++    int ri = 0, rn = 0;
++    QLIST_FOREACH_ENTRY(spans, e) {
++        QDict *sp = qobject_to(QDict, qlist_entry_obj(e));
++        QLIST_FOREACH_ENTRY(qdict_get_qlist(sp, "registers"), e2) {
++            QDict *rd = qobject_to(QDict, qlist_entry_obj(e2));
++            PolariReg *r = &s->regs[ri++];
++            r->name = g_strdup(qdict_get_str(rd, "name"));
++            r->addr = jint(rd, "addr", errp);
++            r->reset = r->value = jint(rd, "reset", errp);
++        }
++    }
++    ri = 0;
++    QLIST_FOREACH_ENTRY(spans, e) {
++        QDict *sp = qobject_to(QDict, qlist_entry_obj(e));
++        int64_t base = jint(sp, "base", errp);
++        int span_first = ri;
++        QLIST_FOREACH_ENTRY(qdict_get_qlist(sp, "registers"), e2) {
++            QDict *rd = qobject_to(QDict, qlist_entry_obj(e2));
++            PolariReg *r = &s->regs[ri++];
++            QList *fl = qdict_get_qlist(rd, "fields");
++            r->nfields = qlist_size(fl);
++            r->fields = g_new0(PolariField, r->nfields);
++            int fi = 0;
++            const QListEntry *e3;
++            QLIST_FOREACH_ENTRY(fl, e3) {
++                QDict *fd = qobject_to(QDict, qlist_entry_obj(e3));
++                PolariField *f = &r->fields[fi++];
++                const char *acc = qdict_get_str(fd, "access");
++                const char *to = qdict_get_try_str(fd, "acts_on");
++                f->name = g_strdup(qdict_get_str(fd, "name"));
++                f->lo = jint(fd, "lo", errp);
++                f->width = jint(fd, "width", errp);
++                f->acts_on = -1;
++                int a;
++                for (a = 0; a < (int)ARRAY_SIZE(ACCESS_WORDS); a++) {
++                    if (!strcmp(acc, ACCESS_WORDS[a])) {
++                        break;
++                    }
++                }
++                if (a == (int)ARRAY_SIZE(ACCESS_WORDS)) {
++                    error_setg(errp, "polari-block: %s.%s: access word '%s' is not one this device interprets", r->name, f->name, acc);
++                    break;
++                }
++                f->access = a;
++                if (f->access == PB_W1SET || f->access == PB_W1CLR) {
++                    f->acts_on = (to && *to) ? reg_index(s, to) : -1;
++                    if (f->acts_on < 0) {
++                        error_setg(errp, "polari-block: %s.%s is %s but acts on '%s', which this device does not model",
++                                   r->name, f->name, acc, to ? to : "");
++                        break;
++                    }
++                }
++            }
++            if (*errp) {
++                break;
++            }
++        }
++        if (*errp) {
++            break;
++        }
++        /* the mapped runs of this span: [offset, length] each, contiguous 4-byte registers in address order */
++        QLIST_FOREACH_ENTRY(qdict_get_qlist(sp, "map"), e2) {
++            QList *pair = qobject_to(QList, qlist_entry_obj(e2));
++            int64_t off = pair ? list_int(pair, 0) : -1, len = pair ? list_int(pair, 1) : -1;
++            PolariRun *run = &s->runs[rn++];
++            if (off < 0 || len <= 0 || len % 4) {
++                error_setg(errp, "polari-block: a map run of span 0x%08" PRIx64 " is not [offset, length]", base);
++                break;
++            }
++            run->s = s;
++            run->base = base + off;
++            run->count = len / 4;
++            run->first = -1;
++            for (int k = span_first; k < ri; k++) {
++                if (s->regs[k].addr == run->base) {
++                    run->first = k;
++                    break;
++                }
++            }
++            if (run->first < 0) {
++                error_setg(errp, "polari-block: run at 0x%08x has no register", run->base);
++                break;
++            }
++            for (int k = 0; k < run->count; k++) {
++                if (run->first + k >= ri || s->regs[run->first + k].addr != run->base + 4u * k) {
++                    error_setg(errp, "polari-block: run at 0x%08x is not contiguous at +0x%x", run->base, 4 * k);
++                    break;
++                }
++            }
++        }
++        if (*errp) {
++            break;
++        }
++    }
++    qobject_unref(root);
++    return !*errp;
++}
++
++/* ---- the final-state dump (the fold check of the pt-1b gate) */
++
++static void pb_exit(Notifier *n, void *data)
++{
++    PolariBlockState *s = container_of(n, PolariBlockState, exit_notifier);
++    FILE *fp = fopen(s->dump, "w");
++    if (!fp) {
++        error_report("polari-block: cannot write dump %s", s->dump);
++        return;
++    }
++    fprintf(fp, "# polari-block layout sha256 %s writes %" PRIu64 " unmodelled %" PRIu64 "\n", s->sha256, s->writes, s->unmodelled);
++    for (int i = 0; i < s->nregs; i++) {
++        PolariReg *r = &s->regs[i];
++        fprintf(fp, "0x%08x %s 0x%08x%s\n", r->addr, r->name, r->value & read_mask(r), r->value == r->reset ? "" : " changed");
++    }
++    fclose(fp);
++}
++
++static void pb_realize(DeviceState *dev, Error **errp)
++{
++    PolariBlockState *s = POLARI_BLOCK(dev);
++    if (!s->layout || !*s->layout) {
++        error_setg(errp, "polari-block: the layout property is required");
++        return;
++    }
++    if (!load_layout(s, errp)) {
++        return;
++    }
++    for (int i = 0; i < s->nruns; i++) {
++        PolariRun *run = &s->runs[i];
++        g_autofree char *name = g_strdup_printf("polari-block.%s", s->regs[run->first].name);
++        memory_region_init_io(&run->mr, OBJECT(s), &pb_ops, run, name, 4u * run->count);
++        memory_region_add_subregion_overlap(get_system_memory(), run->base, &run->mr, POLARI_BLOCK_PRIORITY);
++    }
++    if (s->dump && *s->dump) {
++        s->exit_notifier.notify = pb_exit;
++        qemu_add_exit_notifier(&s->exit_notifier);
++    }
++    info_report("polari-block: layout %s (sha256 %.12s): %d registers in %d runs", s->layout, s->sha256, s->nregs, s->nruns);
++}
++
++static void pb_reset_hold(Object *obj, ResetType type)
++{
++    PolariBlockState *s = POLARI_BLOCK(obj);
++    for (int i = 0; i < s->nregs; i++) {
++        s->regs[i].value = s->regs[i].reset;
++    }
++}
++
++static void pb_init(Object *obj)
++{
++    PolariBlockState *s = POLARI_BLOCK(obj);
++    sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
++}
++
++static Property pb_properties[] = {
++    DEFINE_PROP_STRING("layout", PolariBlockState, layout),
++    DEFINE_PROP_STRING("dump", PolariBlockState, dump),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void pb_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    ResettableClass *rc = RESETTABLE_CLASS(klass);
++    dc->realize = pb_realize;
++    rc->phases.hold = pb_reset_hold;
++    device_class_set_props(dc, pb_properties);
++    dc->desc = "Polari register block driven by a device layout";
++}
++
++static const TypeInfo pb_info = {
++    .name = TYPE_POLARI_BLOCK,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(PolariBlockState),
++    .instance_init = pb_init,
++    .class_init = pb_class_init,
++};
++
++static void pb_register_types(void)
++{
++    type_register_static(&pb_info);
++}
++
++type_init(pb_register_types)
+diff --git a/hw/riscv/esp32c3.c b/hw/riscv/esp32c3.c
+index ed698fb..57f8d1b 100644
+--- a/hw/riscv/esp32c3.c
++++ b/hw/riscv/esp32c3.c
+@@ -36,6 +36,7 @@
+ #include "hw/nvram/esp32c3_efuse.h"
+ #include "hw/riscv/esp32c3_clk.h"
+ #include "hw/riscv/esp32c3_intmatrix.h"
++#include "hw/misc/polari_block.h"
+ #include "hw/misc/esp32c3_sha.h"
+ #include "hw/timer/esp32c3_timg.h"
+ #include "hw/timer/esp32c3_systimer.h"
+@@ -73,6 +74,7 @@ struct Esp32C3MachineState {
+     ESP32C3IntMatrixState intmatrix;
+     ESP32C3UARTState uart[ESP32C3_UART_COUNT];
+     ESP32C3GPIOState gpio;
++    char *polari_layout;    /* Polari pin twin (pt-1b): a device layout -> polari-block over the GPIO / IO_MUX; NULL = stock */
+     ESP32C3CacheState cache;
+     ESP32C3EfuseState efuse;
+     ESP32C3ClockState clock;
+@@ -492,6 +494,16 @@ static void esp32c3_machine_init(MachineState *machine)
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, mr, 0);
+     }
+ 
++    /* Polari pin twin (pt-1b): only with -machine esp32c3,polari-layout=FILE. The device maps the layout's runs above the
++     * vendor regions; its line enters the interrupt matrix at the GPIO source (the stock GPIO's line is never connected). */
++    if (ms->polari_layout) {
++        DeviceState *pb = qdev_new(TYPE_POLARI_BLOCK);
++        qdev_prop_set_string(pb, "layout", ms->polari_layout);
++        object_property_add_child(OBJECT(machine), "polari-block", OBJECT(pb));
++        sysbus_realize_and_unref(SYS_BUS_DEVICE(pb), &error_fatal);
++        sysbus_connect_irq(SYS_BUS_DEVICE(pb), 0, qdev_get_gpio_in(DEVICE(&ms->intmatrix), ETS_GPIO_INTR_SOURCE));
++    }
++
+     /* (Extmem) Cache realization */
+     {
+         if (blk) {
+@@ -659,6 +671,18 @@ static void esp32c3_machine_init(MachineState *machine)
+ }
+ 
+ 
++static char *esp32c3_get_polari_layout(Object *obj, Error **errp)
++{
++    return g_strdup(ESP32C3_MACHINE(obj)->polari_layout);
++}
++
++static void esp32c3_set_polari_layout(Object *obj, const char *value, Error **errp)
++{
++    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
++    g_free(ms->polari_layout);
++    ms->polari_layout = (value && *value) ? g_strdup(value) : NULL;
++}
++
+ /* Initialize machine type */
+ static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
+ {
+@@ -670,6 +694,9 @@ static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
+     mc->default_cpus = 1;
+     // 0x4f600
+     mc->default_ram_size = 400 * 1024;
++    object_class_property_add_str(oc, "polari-layout", esp32c3_get_polari_layout, esp32c3_set_polari_layout);
++    object_class_property_set_description(oc, "polari-layout",
++                                          "Polari device layout (polari-block-layout/1): overlay the GPIO / IO_MUX with polari-block");
+ }
+ 
+ /* Create a new type of machine ("child class") */
+diff --git a/include/hw/misc/polari_block.h b/include/hw/misc/polari_block.h
+new file mode 100644
+index 0000000..2cd09c0
+--- /dev/null
++++ b/include/hw/misc/polari_block.h
+@@ -0,0 +1,63 @@
++/*
++ * polari-block: a register block driven by a Polari device layout (polari-block-layout/1)
++ *
++ * Copyright (c) 2026 Polari contributors
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 or
++ * (at your option) any later version.
++ */
++#ifndef HW_MISC_POLARI_BLOCK_H
++#define HW_MISC_POLARI_BLOCK_H
++
++#include "hw/sysbus.h"
++#include "qemu/notify.h"
++
++#define TYPE_POLARI_BLOCK "polari-block"
++OBJECT_DECLARE_SIMPLE_TYPE(PolariBlockState, POLARI_BLOCK)
++
++/* overlay priority: above the vendor model (0), so only the mapped runs are ours and every other offset falls through */
++#define POLARI_BLOCK_PRIORITY 1
++
++typedef enum {
++    PB_RW, PB_R, PB_W1SET, PB_W1CLR, PB_WSTROBE, PB_RW1C, PB_RWSC, PB_W1C, PB_W0C,
++} PolariAccess;
++
++typedef struct PolariField {
++    char *name;
++    uint8_t lo, width;
++    PolariAccess access;
++    int acts_on;                /* register index a w1-set / w1-clear field acts on, else -1 */
++} PolariField;
++
++typedef struct PolariReg {
++    char *name;
++    uint32_t addr;
++    uint32_t reset, value;
++    int nfields;
++    PolariField *fields;
++} PolariReg;
++
++typedef struct PolariRun {
++    PolariBlockState *s;
++    MemoryRegion mr;
++    uint32_t base;              /* absolute address of the run's first register */
++    int first;                  /* index of that register; the run's registers are contiguous */
++    int count;
++} PolariRun;
++
++struct PolariBlockState {
++    SysBusDevice parent_obj;
++    char *layout;               /* path of the layout JSON (property) */
++    char *dump;                 /* optional path: the final register state is written here at exit */
++    char *sha256;               /* the layout's own sha, echoed in the dump */
++    int nregs;
++    PolariReg *regs;
++    int nruns;
++    PolariRun *runs;
++    uint64_t writes, unmodelled;
++    qemu_irq irq;
++    Notifier exit_notifier;
++};
++
++#endif
+-- 
+2.34.1
+

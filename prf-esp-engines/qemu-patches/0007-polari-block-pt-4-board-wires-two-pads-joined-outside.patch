@@ -1,0 +1,197 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Polari Suite <polari@localhost.invalid>
+Date: Sun, 22 Nov 2026 16:00:00 -0500
+Subject: [PATCH 7/7] polari-block pt-4: board wires - two pads joined outside
+ the chip are one node; a late client is told the levels
+
+A jumper on the board (the light's LED-to-sense wire) cannot be played by the
+pin channel: its level depends on what the firmware drives. wires="a-b,c-d"
+joins pads: a pad sees the channel's level on either end, else the other
+end's driver, else the pulls of both ends. One wire per pad; a node of three
+pads is refused at load. The dump lists the wires.
+
+A client that connects to the pin channel after the reset report (a socket
+backend, the live twin) is sent every pad's current level. A file backend
+opens before the reset and gets the reset report only, as before.
+
+Signed-off-by: Polari Suite <polari@localhost.invalid>
+---
+diff --git a/hw/misc/polari_block.c b/hw/misc/polari_block.c
+index 787af08..5d4460e 100644
+--- a/hw/misc/polari_block.c
++++ b/hw/misc/polari_block.c
+@@ -133,7 +133,8 @@ static void fset(PolariBlockState *s, PolariRef ref, uint32_t v)
+     s->regs[ref.reg].value = (s->regs[ref.reg].value & ~m) | ((v << f->lo) & m);
+ }
+ 
+-static char pin_level(PolariBlockState *s, int n)
++/* what the chip itself puts on pad n: '0' / '1', or 'z' when this device does not drive the pad */
++static char pin_drive(PolariBlockState *s, int n)
+ {
+     PolariPin *p = &s->pins[n];
+     uint32_t func = fget(s, p->role[PR_PAD_FUNCTION]);
+@@ -166,22 +167,42 @@ static char pin_level(PolariBlockState *s, int n)
+     if (gpio_pad && plain && en) {
+         uint32_t out = fget(s, p->role[PR_OUTPUT]) ^ (fget(s, p->role[PR_OUTPUT_INVERT]) == s->v_out_inverted ? 1 : 0);
+         if (fget(s, p->role[PR_OUTPUT_DRIVER]) != s->v_open_drain || !out) {
+-            char drv = out ? '1' : '0';
+-            if (p->ext != 'z' && p->ext != drv && !p->warned_contention) {
+-                /* a button wired to an output pin: the twin shows the mistake (the chip's level is kept) */
+-                qemu_log_mask(LOG_GUEST_ERROR, "polari-block: GPIO%d driven %c by the chip and %c from outside\n", n, drv, p->ext);
+-                p->warned_contention = true;
+-            }
+-            return drv;
++            return out ? '1' : '0';
++        }
++        /* open drain, a 1: the pad is released - falls to the outside level / the pull */
++    }
++    return 'z';
++}
++
++/* The pad's level. Outside the chip a pad sees the pin channel's level on itself or on the pad it is wired to (a jumper is one
++ * node), else what the wired pad's own driver puts on the wire; with nothing driving, the pulls of both ends decide. */
++static char pin_level(PolariBlockState *s, int n)
++{
++    PolariPin *p = &s->pins[n], *w = p->wire >= 0 ? &s->pins[p->wire] : NULL;
++    char drv = pin_drive(s, n);
++    char ext = p->ext != 'z' ? p->ext : w ? w->ext : 'z';
++    if (ext == 'z' && w) {
++        ext = pin_drive(s, p->wire);
++    }
++    if (drv != 'z') {
++        if (ext != 'z' && ext != drv && !p->warned_contention) {
++            /* a button, or another output, wired to an output pin: the twin shows the mistake (the chip's level is kept) */
++            qemu_log_mask(LOG_GUEST_ERROR, "polari-block: GPIO%d driven %c by the chip and %c from outside\n", n, drv, ext);
++            p->warned_contention = true;
+         }
+-        /* open drain, a 1: the pad is released - falls to the outside level / the pull below */
++        return drv;
+     }
+-    if (p->ext != 'z') {
+-        return p->ext;
++    if (ext != 'z') {
++        return ext;
+     }
+     bool up = fget(s, p->role[PR_PULL_UP]), down = fget(s, p->role[PR_PULL_DOWN]);
++    if (w) {
++        up = up || fget(s, w->role[PR_PULL_UP]);
++        down = down || fget(s, w->role[PR_PULL_DOWN]);
++    }
+     if (up && down && !p->warned_pulls) {
+-        qemu_log_mask(LOG_GUEST_ERROR, "polari-block: GPIO%d has both pulls on: read as pulled up\n", n);
++        qemu_log_mask(LOG_GUEST_ERROR, "polari-block: GPIO%d is pulled both up and down%s: read as pulled up\n", n,
++                      w ? " (its own pulls and the wired pad's)" : "");
+         p->warned_pulls = true;
+     }
+     return up ? '1' : down ? '0' : 'z';
+@@ -272,6 +293,21 @@ static void pins_update(PolariBlockState *s, bool emit_all)
+     irq_update(s, rose, fell);
+ }
+ 
++/* a client that joins the pin channel after the reset report (the live twin's socket) is told every pad's level as it is now;
++ * a file backend opens before the reset, when no level is known yet ('?'), and gets the reset report only */
++static void pb_chr_event(void *opaque, QEMUChrEvent event)
++{
++    PolariBlockState *s = opaque;
++    if (event != CHR_EVENT_OPENED) {
++        return;
++    }
++    for (int n = 0; n < s->npins; n++) {
++        if (s->pins[n].level != '?') {
++            pin_emit(s, n, s->pins[n].level);
++        }
++    }
++}
++
+ static int pb_can_receive(void *opaque)
+ {
+     return 1;
+@@ -702,10 +738,42 @@ static void pb_exit(Notifier *n, void *data)
+             fprintf(fp, " %d=%c", k, s->pins[k].level);
+         }
+         fprintf(fp, "\n");
++        for (int k = 0; k < s->npins; k++) {
++            if (s->pins[k].wire > k) {
++                fprintf(fp, "# wire %d-%d\n", k, s->pins[k].wire);
++            }
++        }
+     }
+     fclose(fp);
+ }
+ 
++/* wires="a-b,c-d": the board's jumpers. One wire per pad: a node of three pads is refused, not guessed. */
++static bool load_wires(PolariBlockState *s, Error **errp)
++{
++    for (int n = 0; n < POLARI_MAX_PINS; n++) {
++        s->pins[n].wire = -1;
++    }
++    if (!s->wires || !*s->wires) {
++        return true;
++    }
++    g_auto(GStrv) parts = g_strsplit(s->wires, ",", -1);
++    for (char **w = parts; *w; w++) {
++        int a, b;
++        char tail;
++        if (sscanf(*w, "%d-%d%c", &a, &b, &tail) != 2 || a < 0 || b < 0 || a >= s->npins || b >= s->npins || a == b) {
++            error_setg(errp, "polari-block: wires wants pad-pad pairs of this pinbank (pads 0..%d), got '%s'", s->npins - 1, *w);
++            return false;
++        }
++        if (s->pins[a].wire >= 0 || s->pins[b].wire >= 0) {
++            error_setg(errp, "polari-block: a pad carries one wire at most (a node of three pads is not modelled): '%s'", *w);
++            return false;
++        }
++        s->pins[a].wire = b;
++        s->pins[b].wire = a;
++    }
++    return true;
++}
++
+ static void pb_realize(DeviceState *dev, Error **errp)
+ {
+     PolariBlockState *s = POLARI_BLOCK(dev);
+@@ -713,7 +781,7 @@ static void pb_realize(DeviceState *dev, Error **errp)
+         error_setg(errp, "polari-block: the layout property is required");
+         return;
+     }
+-    if (!load_layout(s, errp)) {
++    if (!load_layout(s, errp) || !load_wires(s, errp)) {
+         return;
+     }
+     for (int i = 0; i < s->nruns; i++) {
+@@ -724,7 +792,7 @@ static void pb_realize(DeviceState *dev, Error **errp)
+     }
+     if (s->npins) {
+         s->input_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, input_due, s);
+-        qemu_chr_fe_set_handlers(&s->chr, pb_can_receive, pb_receive, NULL, NULL, s, NULL, true);
++        qemu_chr_fe_set_handlers(&s->chr, pb_can_receive, pb_receive, pb_chr_event, NULL, s, NULL, true);
+     }
+     if (s->dump && *s->dump) {
+         s->exit_notifier.notify = pb_exit;
+@@ -759,6 +827,7 @@ static void pb_init(Object *obj)
+ static Property pb_properties[] = {
+     DEFINE_PROP_STRING("layout", PolariBlockState, layout),
+     DEFINE_PROP_STRING("dump", PolariBlockState, dump),
++    DEFINE_PROP_STRING("wires", PolariBlockState, wires),
+     DEFINE_PROP_CHR("chardev", PolariBlockState, chr),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+diff --git a/include/hw/misc/polari_block.h b/include/hw/misc/polari_block.h
+index d2ad628..6cd8675 100644
+--- a/include/hw/misc/polari_block.h
++++ b/include/hw/misc/polari_block.h
+@@ -67,6 +67,7 @@ typedef struct PolariPin {
+     char ext;                   /* '0' '1' 'z': driven from outside (the pin channel); 'z' = not driven */
+     bool warned_route, warned_pulls, warned_function, warned_contention, warned_type;
+     bool in;                    /* the input signal as last seen by the interrupt logic (level AND input enable) */
++    int wire;                   /* the pad this one is wired to OUTSIDE the chip (a jumper on the board), -1 = none */
+ } PolariPin;
+ 
+ /* a stamped outside input waiting for its virtual time (econ, pt-2 review: presses must land on the same instruction every run) */
+@@ -82,6 +83,7 @@ struct PolariBlockState {
+     SysBusDevice parent_obj;
+     char *layout;               /* path of the layout JSON (property) */
+     char *dump;                 /* optional path: the final register state is written here at exit */
++    char *wires;                /* optional "a-b,c-d": pads wired to each other outside the chip (the board's jumpers) */
+     char *sha256;               /* the layout's own sha, echoed in the dump */
+     int nregs;
+     PolariReg *regs;

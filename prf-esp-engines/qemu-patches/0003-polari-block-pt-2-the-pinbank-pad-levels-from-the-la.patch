@@ -1,0 +1,409 @@
+From 40b75b4f3433cb611bb3550a8d75c9575122d699 Mon Sep 17 00:00:00 2001
+From: Polari Suite <polari@localhost.invalid>
+Date: Sat, 14 Nov 2026 01:02:39 -0500
+Subject: [PATCH 3/7] polari-block pt-2: the pinbank - pad levels from the
+ layout's roles, the pin channel, GPIO_IN = level AND input enable
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A `pinbank` device resolves each role to its STORED field per pin (an alias-only role, edge_flag = STATUS_W1TC,
+through acts_on) and recomputes every pad after each write and each outside input (PIN_TWIN_PLAN.md §2):
+- drives when the pad function is one of the pad's GPIO functions, the route is the plain GPIO out and the
+  output is enabled; with that route the enable is GPIO_ENABLE whatever OEN_SEL says (an inference from
+  ESP-IDF's working path, now measured: the IDF build (OEN_SEL 0) and the HAL build (OEN_SEL 1) both drive);
+- open drain drives only 0; inversion of value / enable applied; else the outside level, else the pull, else z;
+- a peripheral route on a GPIO pad is logged unmodelled (the light firmware: GPIO4, signal 9).
+-global polari-block.chardev=ID: out "@<virtual ns> <pin> 0|1|z" (every pad at reset, then each change), in
+"<pin> 0|1|z". The dump adds the pad levels and the edge count. Interrupts are pt-3.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/misc/polari_block.c         | 251 ++++++++++++++++++++++++++++++++-
+ include/hw/misc/polari_block.h |  30 ++++
+ 2 files changed, 280 insertions(+), 1 deletion(-)
+
+diff --git a/hw/misc/polari_block.c b/hw/misc/polari_block.c
+index 37e28a1..53b5ba5 100644
+--- a/hw/misc/polari_block.c
++++ b/hw/misc/polari_block.c
+@@ -5,7 +5,9 @@
+  * this device models, the registers in them with their resets and fields, and each field's access word. The device maps ONLY
+  * the listed runs, at a priority above the vendor model, so every other offset falls through to the vendor model unchanged.
+  * Writes are interpreted by access word; a w1-set / w1-clear field acts on the register its row names (acts_on).
+- * The pin behaviour (pinbank: pad level, the pin channel, interrupts) is pt-2 / pt-3; this stage is the register file.
++ * pt-2: a `pinbank` device computes each pad's level from its roles (PIN_TWIN_PLAN.md §2) after every write and every outside
++ * input, sends each change on the pin channel (-global polari-block.chardev=ID: "@<virtual ns> <pin> 0|1|z"), takes outside
++ * levels from it ("<pin> 0|1|z"), and keeps the input register = level AND pad input enable. Interrupts are pt-3.
+  *
+  * Copyright (c) 2026 Polari contributors
+  *
+@@ -26,7 +28,10 @@
+ #include "exec/address-spaces.h"
+ #include "hw/irq.h"
+ #include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
+ #include "sysemu/sysemu.h"
++#include "qemu/timer.h"
++#include "chardev/char-fe.h"
+ #include "hw/misc/polari_block.h"
+ 
+ static const char *const ACCESS_WORDS[] = {
+@@ -101,6 +106,125 @@ static void reg_write(PolariBlockState *s, PolariReg *r, uint32_t v)
+     r->value = (r->value & ~read_mask(r)) | (keep & read_mask(r));
+ }
+ 
++/* ---- the pinbank (pt-2): the pin-level rule of PIN_TWIN_PLAN.md §2, from the roles the layout binds per pin */
++
++static const char *const ROLE_NAMES[PR_COUNT] = {
++    [PR_OUTPUT] = "output", [PR_DIRECTION] = "direction", [PR_INPUT] = "input", [PR_PULL_UP] = "pull_up",
++    [PR_PULL_DOWN] = "pull_down", [PR_PAD_IE] = "pad_input_enable", [PR_PAD_FUNCTION] = "pad_function",
++    [PR_OUTPUT_ROUTE] = "output_route", [PR_OUTPUT_ENABLE_SOURCE] = "output_enable_source", [PR_OUTPUT_DRIVER] = "output_driver",
++    [PR_OUTPUT_INVERT] = "output_invert", [PR_ENABLE_INVERT] = "enable_invert", [PR_EDGE_SENSE] = "edge_sense",
++    [PR_LEVEL_SENSE] = "level_sense", [PR_EDGE_MASK] = "edge_mask", [PR_EDGE_FLAG] = "edge_flag",
++    [PR_CPU_STATUS] = "interrupt_status_cpu",
++};
++
++static uint32_t fget(PolariBlockState *s, PolariRef ref)
++{
++    const PolariField *f = &s->regs[ref.reg].fields[ref.field];
++    return (s->regs[ref.reg].value & field_mask(f)) >> f->lo;
++}
++
++static void fset(PolariBlockState *s, PolariRef ref, uint32_t v)
++{
++    const PolariField *f = &s->regs[ref.reg].fields[ref.field];
++    uint32_t m = field_mask(f);
++    s->regs[ref.reg].value = (s->regs[ref.reg].value & ~m) | ((v << f->lo) & m);
++}
++
++static char pin_level(PolariBlockState *s, int n)
++{
++    PolariPin *p = &s->pins[n];
++    uint32_t func = fget(s, p->role[PR_PAD_FUNCTION]);
++    bool gpio_pad = func < 32 && (p->gpio_functions & (1u << func));
++    bool plain = fget(s, p->role[PR_OUTPUT_ROUTE]) == s->v_gpio_out;
++    bool en;
++    if (plain) {
++        /* OUT_SEL = plain GPIO out: the enable is GPIO_ENABLE whatever output_enable_source says (an inference from ESP-IDF's
++         * working path, econ 2026-11-13; not the TRM's words) */
++        en = fget(s, p->role[PR_DIRECTION]);
++    } else {
++        /* a peripheral's signal on this pad: not modelled, so the pad is not driven by this device */
++        en = false;
++        if (gpio_pad && fget(s, p->role[PR_OUTPUT_ENABLE_SOURCE]) != s->v_oen_gpio && !p->warned_route) {
++            qemu_log_mask(LOG_UNIMP, "polari-block: GPIO%d carries a peripheral output (route %u): not modelled\n", n,
++                          fget(s, p->role[PR_OUTPUT_ROUTE]));
++            p->warned_route = true;
++            s->unmodelled++;
++        }
++    }
++    if (fget(s, p->role[PR_ENABLE_INVERT]) == s->v_en_inverted) {
++        en = !en;
++    }
++    if (gpio_pad && plain && en) {
++        uint32_t out = fget(s, p->role[PR_OUTPUT]) ^ (fget(s, p->role[PR_OUTPUT_INVERT]) == s->v_out_inverted ? 1 : 0);
++        if (fget(s, p->role[PR_OUTPUT_DRIVER]) != s->v_open_drain || !out) {
++            return out ? '1' : '0';
++        }
++        /* open drain, a 1: the pad is released - falls to the outside level / the pull below */
++    }
++    if (p->ext != 'z') {
++        return p->ext;
++    }
++    bool up = fget(s, p->role[PR_PULL_UP]), down = fget(s, p->role[PR_PULL_DOWN]);
++    if (up && down && !p->warned_pulls) {
++        qemu_log_mask(LOG_GUEST_ERROR, "polari-block: GPIO%d has both pulls on: read as pulled up\n", n);
++        p->warned_pulls = true;
++    }
++    return up ? '1' : down ? '0' : 'z';
++}
++
++static void pin_emit(PolariBlockState *s, int n, char v)
++{
++    if (qemu_chr_fe_backend_connected(&s->chr)) {
++        char line[48];
++        int len = snprintf(line, sizeof(line), "@%" PRId64 " %d %c\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), n, v);
++        qemu_chr_fe_write_all(&s->chr, (const uint8_t *)line, len);
++    }
++}
++
++/* recompute every pad; emit each change; the input register reads level AND the pad's input enable */
++static void pins_update(PolariBlockState *s, bool emit_all)
++{
++    for (int n = 0; n < s->npins; n++) {
++        PolariPin *p = &s->pins[n];
++        char v = pin_level(s, n);
++        if (v != p->level || emit_all) {
++            if (v != p->level && p->level != '?') {
++                s->edges++;             /* a change after the reset report: the reset level itself is not an edge */
++            }
++            p->level = v;
++            pin_emit(s, n, v);
++        }
++        fset(s, p->role[PR_INPUT], (v == '1' && fget(s, p->role[PR_PAD_IE]) == s->v_ie_on) ? 1 : 0);
++    }
++}
++
++static int pb_can_receive(void *opaque)
++{
++    return 1;
++}
++
++static void pb_receive(void *opaque, const uint8_t *buf, int size)
++{
++    PolariBlockState *s = opaque;
++    for (int i = 0; i < size; i++) {
++        char c = buf[i];
++        if (c != '\n' && s->rxn < (int)sizeof(s->rx) - 1) {
++            s->rx[s->rxn++] = c;
++            continue;
++        }
++        s->rx[s->rxn] = 0;
++        s->rxn = 0;
++        int n;
++        char v;
++        if (sscanf(s->rx, "%d %c", &n, &v) == 2 && n >= 0 && n < s->npins && (v == '0' || v == '1' || v == 'z')) {
++            s->pins[n].ext = v;
++            pins_update(s, false);
++        } else if (s->rx[0]) {
++            qemu_log_mask(LOG_GUEST_ERROR, "polari-block: pin channel line not understood: '%s'\n", s->rx);
++        }
++    }
++}
++
+ static uint64_t pb_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     PolariRun *run = opaque;
+@@ -112,6 +236,9 @@ static void pb_write(void *opaque, hwaddr addr, uint64_t value, unsigned int siz
+ {
+     PolariRun *run = opaque;
+     reg_write(run->s, &run->s->regs[run->first + (addr >> 2)], (uint32_t)value);
++    if (run->s->npins) {
++        pins_update(run->s, false);
++    }
+ }
+ 
+ static const MemoryRegionOps pb_ops = {
+@@ -163,6 +290,108 @@ static int64_t list_int(QList *l, int idx)
+     return -1;
+ }
+ 
++/* the STORED field for one pin of one role: the first per-pin entry that stores; an alias-only role (edge_flag = STATUS_W1TC)
++ * resolves through acts_on to the target's field at the same bits */
++static PolariRef stored_ref(PolariBlockState *s, QList *per_pin, int pin, const char *role, Error **errp)
++{
++    PolariRef alias = { -1, -1 };
++    const QListEntry *e;
++    QLIST_FOREACH_ENTRY(per_pin, e) {
++        QDict *pp = qobject_to(QDict, qlist_entry_obj(e));
++        if (qdict_get_int(pp, "pin") != pin) {
++            continue;
++        }
++        int r = reg_index(s, qdict_get_str(pp, "register"));
++        if (r < 0) {
++            continue;
++        }
++        for (int f = 0; f < s->regs[r].nfields; f++) {
++            if (strcmp(s->regs[r].fields[f].name, qdict_get_str(pp, "field"))) {
++                continue;
++            }
++            PolariAccess a = s->regs[r].fields[f].access;
++            if (a != PB_W1SET && a != PB_W1CLR && a != PB_WSTROBE) {
++                return (PolariRef){ r, f };
++            }
++            if (alias.reg < 0 && s->regs[r].fields[f].acts_on >= 0) {
++                alias = (PolariRef){ r, f };
++            }
++        }
++    }
++    if (alias.reg >= 0) {
++        const PolariField *af = &s->regs[alias.reg].fields[alias.field];
++        PolariReg *t = &s->regs[af->acts_on];
++        for (int f = 0; f < t->nfields; f++) {
++            if (field_mask(&t->fields[f]) == field_mask(af)) {
++                return (PolariRef){ af->acts_on, f };
++            }
++        }
++    }
++    error_setg(errp, "polari-block: role %s has no stored field for pin %d", role, pin);
++    return (PolariRef){ -1, -1 };
++}
++
++static uint32_t role_value(QDict *roles, const char *role, const char *name, Error **errp)
++{
++    QDict *rd = qdict_get_qdict(roles, role);
++    QDict *vals = rd ? qdict_get_qdict(rd, "values") : NULL;
++    if (!vals || !qdict_haskey(vals, name)) {
++        error_setg(errp, "polari-block: role %s has no value '%s' in the layout", role, name);
++        return 0;
++    }
++    return qdict_get_int(vals, name);
++}
++
++static void load_pinbank(PolariBlockState *s, QDict *dev, Error **errp)
++{
++    ERRP_GUARD();
++    if (g_strcmp0(qdict_get_try_str(dev, "behaviour"), "pinbank")) {
++        return;
++    }
++    QDict *params = qdict_get_qdict(dev, "params");
++    QDict *roles = qdict_get_qdict(dev, "roles");
++    s->npins = params ? qdict_get_try_int(params, "pins", 0) : 0;
++    if (s->npins <= 0 || s->npins > POLARI_MAX_PINS || !roles) {
++        error_setg(errp, "polari-block: a pinbank needs params.pins (1..%d) and roles", POLARI_MAX_PINS);
++        return;
++    }
++    for (int k = 0; k < PR_COUNT && !*errp; k++) {
++        QDict *rd = qdict_get_qdict(roles, ROLE_NAMES[k]);
++        if (!rd) {
++            error_setg(errp, "polari-block: the pinbank needs role %s", ROLE_NAMES[k]);
++            return;
++        }
++        for (int n = 0; n < s->npins && !*errp; n++) {
++            s->pins[n].role[k] = stored_ref(s, qdict_get_qlist(rd, "per_pin"), n, ROLE_NAMES[k], errp);
++        }
++    }
++    QDict *gf = qdict_get_qdict(qdict_get_qdict(roles, "pad_function"), "gpio_functions");
++    for (int n = 0; n < s->npins && !*errp; n++) {
++        char key[8];
++        snprintf(key, sizeof(key), "%d", n);
++        QList *l = gf ? qdict_get_qlist(gf, key) : NULL;
++        const QListEntry *e;
++        if (!l) {
++            error_setg(errp, "polari-block: pad_function.gpio_functions has no entry for pad %d", n);
++            return;
++        }
++        QLIST_FOREACH_ENTRY(l, e) {
++            int64_t fn = qnum_get_int(qobject_to(QNum, qlist_entry_obj(e)));
++            if (fn >= 0 && fn < 32) {
++                s->pins[n].gpio_functions |= 1u << fn;
++            }
++        }
++        s->pins[n].ext = 'z';
++        s->pins[n].level = '?';
++    }
++    s->v_gpio_out = role_value(roles, "output_route", "gpio_out", errp);
++    if (!*errp) s->v_open_drain = role_value(roles, "output_driver", "open_drain", errp);
++    if (!*errp) s->v_out_inverted = role_value(roles, "output_invert", "inverted", errp);
++    if (!*errp) s->v_en_inverted = role_value(roles, "enable_invert", "inverted", errp);
++    if (!*errp) s->v_ie_on = role_value(roles, "pad_input_enable", "on", errp);
++    if (!*errp) s->v_oen_gpio = role_value(roles, "output_enable_source", "gpio_enable", errp);
++}
++
+ static bool load_layout(PolariBlockState *s, Error **errp)
+ {
+     ERRP_GUARD();
+@@ -300,6 +529,9 @@ static bool load_layout(PolariBlockState *s, Error **errp)
+             break;
+         }
+     }
++    if (!*errp) {
++        load_pinbank(s, dev, errp);
++    }
+     qobject_unref(root);
+     return !*errp;
+ }
+@@ -319,6 +551,13 @@ static void pb_exit(Notifier *n, void *data)
+         PolariReg *r = &s->regs[i];
+         fprintf(fp, "0x%08x %s 0x%08x%s\n", r->addr, r->name, r->value & read_mask(r), r->value == r->reset ? "" : " changed");
+     }
++    if (s->npins) {
++        fprintf(fp, "# pins (level; edges %" PRIu64 "):", s->edges);
++        for (int k = 0; k < s->npins; k++) {
++            fprintf(fp, " %d=%c", k, s->pins[k].level);
++        }
++        fprintf(fp, "\n");
++    }
+     fclose(fp);
+ }
+ 
+@@ -338,6 +577,9 @@ static void pb_realize(DeviceState *dev, Error **errp)
+         memory_region_init_io(&run->mr, OBJECT(s), &pb_ops, run, name, 4u * run->count);
+         memory_region_add_subregion_overlap(get_system_memory(), run->base, &run->mr, POLARI_BLOCK_PRIORITY);
+     }
++    if (s->npins) {
++        qemu_chr_fe_set_handlers(&s->chr, pb_can_receive, pb_receive, NULL, NULL, s, NULL, true);
++    }
+     if (s->dump && *s->dump) {
+         s->exit_notifier.notify = pb_exit;
+         qemu_add_exit_notifier(&s->exit_notifier);
+@@ -351,6 +593,12 @@ static void pb_reset_hold(Object *obj, ResetType type)
+     for (int i = 0; i < s->nregs; i++) {
+         s->regs[i].value = s->regs[i].reset;
+     }
++    if (s->npins) {
++        for (int n = 0; n < s->npins; n++) {
++            s->pins[n].level = '?';
++        }
++        pins_update(s, true);   /* every pad's reset level, once, at virtual time 0 */
++    }
+ }
+ 
+ static void pb_init(Object *obj)
+@@ -362,6 +610,7 @@ static void pb_init(Object *obj)
+ static Property pb_properties[] = {
+     DEFINE_PROP_STRING("layout", PolariBlockState, layout),
+     DEFINE_PROP_STRING("dump", PolariBlockState, dump),
++    DEFINE_PROP_CHR("chardev", PolariBlockState, chr),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+diff --git a/include/hw/misc/polari_block.h b/include/hw/misc/polari_block.h
+index 2cd09c0..96cd52e 100644
+--- a/include/hw/misc/polari_block.h
++++ b/include/hw/misc/polari_block.h
+@@ -12,6 +12,7 @@
+ 
+ #include "hw/sysbus.h"
+ #include "qemu/notify.h"
++#include "chardev/char-fe.h"
+ 
+ #define TYPE_POLARI_BLOCK "polari-block"
+ OBJECT_DECLARE_SIMPLE_TYPE(PolariBlockState, POLARI_BLOCK)
+@@ -46,6 +47,27 @@ typedef struct PolariRun {
+     int count;
+ } PolariRun;
+ 
++/* the pinbank roles the device runs (PIN_TWIN_PLAN.md §2; names = the layout's role keys, bound per chip in hal soc_rules) */
++typedef enum {
++    PR_OUTPUT, PR_DIRECTION, PR_INPUT, PR_PULL_UP, PR_PULL_DOWN, PR_PAD_IE, PR_PAD_FUNCTION, PR_OUTPUT_ROUTE,
++    PR_OUTPUT_ENABLE_SOURCE, PR_OUTPUT_DRIVER, PR_OUTPUT_INVERT, PR_ENABLE_INVERT, PR_EDGE_SENSE, PR_LEVEL_SENSE,
++    PR_EDGE_MASK, PR_EDGE_FLAG, PR_CPU_STATUS, PR_COUNT
++} PolariRole;
++
++typedef struct PolariRef {
++    int reg, field;             /* the STORED field a role reads for one pin (an alias-only role resolves through acts_on) */
++} PolariRef;
++
++#define POLARI_MAX_PINS 64
++
++typedef struct PolariPin {
++    PolariRef role[PR_COUNT];
++    uint32_t gpio_functions;    /* bit k set = pad function k is this pad's GPIO */
++    char level;                 /* '0' '1' 'z': the pad's level as last computed */
++    char ext;                   /* '0' '1' 'z': driven from outside (the pin channel); 'z' = not driven */
++    bool warned_route, warned_pulls;
++} PolariPin;
++
+ struct PolariBlockState {
+     SysBusDevice parent_obj;
+     char *layout;               /* path of the layout JSON (property) */
+@@ -56,6 +78,14 @@ struct PolariBlockState {
+     int nruns;
+     PolariRun *runs;
+     uint64_t writes, unmodelled;
++    /* the pinbank (pt-2) */
++    int npins;
++    PolariPin pins[POLARI_MAX_PINS];
++    uint32_t v_gpio_out, v_open_drain, v_out_inverted, v_en_inverted, v_ie_on, v_oen_gpio;
++    CharBackend chr;            /* the pin channel: out "@<virtual ns> <pin> 0|1|z", in "<pin> 0|1|z" */
++    char rx[64];
++    int rxn;
++    uint64_t edges;
+     qemu_irq irq;
+     Notifier exit_notifier;
+ };
+-- 
+2.34.1
+

@@ -24,10 +24,20 @@ collect what the firmware said (sc-3; the twin of FIRMWARE_SCENARIO_PLAN.md §9 
       --boots N        run N consecutive boots on the SAME flash copy (a power cycle each time, flash kept - NVS counters survive); uart0.bin and trace.log
                        are the boots' outputs in order, trace.log with a `@POWER-CYCLE n` line between them.
 
+    pt-4 (PIN_TWIN_PLAN.md), the PIN MODEL: the chip's own GPIO code on real pads, no RAM shim in the firmware
+      --pins FILE      a device layout (board.custom.sim_layout, a basename in the job dir): QEMU is the from-source build with the `polari-block`
+                       device (qemu-system-riscv32-polari; the prebuilt binary's GPIO is a register stub) and the layout's pads answer GPIO + IO_MUX.
+                       out  pins.log     the pin channel, one line per pad level change: `@<virtual ns> <pad> 0|1|z` (the reset levels at @0)
+                            pb-dump.txt  the device's final registers, pad levels, edge and interrupt counts (the last boot's)
+      --pins-in FILE   what the board does to the pads, stamped in virtual time: lines `@<ns> <pad> 0|1|z` (a press = 0, a release = z), applied on
+                       the same instruction every run; with --boots, every boot gets the same file
+      --wires A-B,...  pads wired to each other on the board (the LED-to-sense jumper): one node, one wire per pad
+
   TWIN mode (a long-lived container, `pol board twin c3 up`):
-    polari-c3-run flash_image.bin --serve PORT [--trace FILE]
+    polari-c3-run flash_image.bin --serve PORT [--trace FILE] [--pins FILE [--wires A-B] [--pins-port PORT2]]
       UART0 on TCP :PORT (server, nowait — the host's pty pump dials it), UART1 to FILE, -icount shift=auto,sleep=on so
-      virtual time tracks the wall clock (the bridge sees ~real time); runs until stopped.
+      virtual time tracks the wall clock (the bridge sees ~real time); runs until stopped. With --pins the pin channel is
+      a TCP server on PORT2 (default PORT + 1): it sends the level lines and takes `<pad> 0|1|z` lines (unstamped = now).
 """
 import json
 import os
@@ -39,11 +49,12 @@ import sys
 import time
 
 QEMU = 'qemu-system-riscv32'
+QEMU_PINS = 'qemu-system-riscv32-polari'      # the from-source build with the polari-block device (pt-4); absent in an image built before it
 
 
-def qemu_version():
+def qemu_version(binary=QEMU):
     try:
-        return subprocess.run([QEMU, '--version'], capture_output=True, text=True, timeout=20).stdout.splitlines()[0].strip()
+        return subprocess.run([binary, '--version'], capture_output=True, text=True, timeout=20).stdout.splitlines()[0].strip()
     except Exception:
         return ''
 
@@ -57,14 +68,39 @@ def patch(src, dst, params_hex, offset):
             f.write(data)
 
 
-def base_argv(image, icount, realtime):
+def base_argv(image, icount, realtime, pins=''):
     """scenario: -icount shift=N,align=off,sleep=off — virtual time is the instruction count alone (2^N ns each; N = 3 is
     Espressif's documented value, 125 M instructions per virtual second — near the C3's 160 MHz), reproducible, as fast as the
     host runs. twin: -icount shift=auto,sleep=on — QEMU adapts the shift so virtual time tracks the wall clock (measured
     with shift=3 even with align=on,sleep=on: virtual time ran ~5.6x ahead, 100 ms telemetry every ~18 ms)."""
     ic = 'shift=auto,sleep=on' if realtime else 'shift=%d,align=off,sleep=off' % icount
-    return [QEMU, '-machine', 'esp32c3', '-display', 'none', '-monitor', 'none', '-nodefaults', '-icount', ic,
+    machine = 'esp32c3,polari-layout=%s' % os.path.abspath(pins) if pins else 'esp32c3'
+    return [QEMU_PINS if pins else QEMU, '-machine', machine, '-display', 'none', '-monitor', 'none', '-nodefaults', '-icount', ic,
             '-drive', 'file=%s,if=mtd,format=raw' % image]
+
+
+def pins_argv(a, chardev):
+    """The pin channel + the device's options for a run with --pins ([] without): `chardev` is the channel's backend, less its id."""
+    if not a['pins']:
+        return []
+    out = ['-chardev', '%s,id=pins' % chardev, '-global', 'polari-block.chardev=pins']
+    if a['wires']:
+        out += ['-global', 'polari-block.wires=%s' % a['wires']]
+    return out
+
+
+def pins_refusal(a):
+    """'' or why --pins cannot run here (said before QEMU starts, never a silent fall back to the stub)."""
+    if not a['pins']:
+        return 'polari-c3-run: --pins-in / --wires need --pins LAYOUT' if (a['pins_in'] or a['wires']) else ''
+    if not shutil.which(QEMU_PINS):
+        return 'polari-c3-run: --pins needs %s (the polari-block build, pt-4): this image does not hold it' % QEMU_PINS
+    for f in (a['pins'], a['pins_in']):
+        if f and not os.path.exists(f):
+            return 'polari-c3-run: %s is not in the job dir' % f
+    if a['wires'] and not all(len(w.split('-')) == 2 and all(x.isdigit() for x in w.split('-')) for w in a['wires'].split(',')):
+        return 'polari-c3-run: --wires wants pad-pad pairs (0-1,4-5), got %s' % a['wires']
+    return ''
 
 
 def _pace(p, a, plan, sock, t0, tr, u0):
@@ -121,12 +157,15 @@ def _pace(p, a, plan, sock, t0, tr, u0):
 
 def one_boot(a, img, n):
     """One QEMU boot of `img` (a flash copy kept across boots). -> (ended, why, cost dict, argv, uart0 bytes, trace text, qemu output tail, rx sent)."""
-    uart_f, trace_f = 'uart0.%d.bin' % n, 'trace.%d.log' % n
-    for f in (uart_f, trace_f):
+    uart_f, trace_f, pins_f = 'uart0.%d.bin' % n, 'trace.%d.log' % n, 'pins.%d.log' % n
+    for f in (uart_f, trace_f, pins_f):
         if os.path.exists(f):
             os.remove(f)
     plan = a['plan']
-    argv = base_argv(img, a['icount'], False)
+    argv = base_argv(img, a['icount'], False, a['pins'])
+    if a['pins']:
+        argv += pins_argv(a, 'file,path=%s%s' % (os.path.abspath(pins_f), ',input-path=%s' % os.path.abspath(a['pins_in']) if a['pins_in'] else ''))
+        argv += ['-global', 'polari-block.dump=%s' % os.path.abspath('pb-dump.txt')]
     if plan:
         port = _free_port()
         argv += ['-serial', 'tcp:127.0.0.1:%d,server=on,wait=on' % port, '-serial', 'file:%s' % trace_f]
@@ -170,7 +209,7 @@ def _free_port():
 
 def scenario(a):
     patch(a['image'], 'run.bin', a['params'], a['offset'])
-    for f in ('uart0.bin', 'trace.log'):
+    for f in ('uart0.bin', 'trace.log', 'pins.log', 'pb-dump.txt'):
         if os.path.exists(f):
             os.remove(f)
     a['plan'] = []
@@ -197,10 +236,24 @@ def scenario(a):
             for f in (tf, uf):
                 if os.path.exists(f):
                     os.remove(f)
+    pin_lines = 0
+    if a['pins']:
+        with open('pins.log', 'wb') as pl:
+            for i in range(len(boots)):
+                pf = 'pins.%d.log' % i
+                if i:
+                    pl.write(('@POWER-CYCLE %d\n' % i).encode())
+                if os.path.exists(pf):
+                    data = open(pf, 'rb').read()
+                    pin_lines += data.count(b'\n')
+                    pl.write(data)
+                    os.remove(pf)
     lines = open('trace.log', 'rb').read().decode('utf-8', 'replace').count('\n')
     ended = all(c['ended'] for c in costs)
     res = {'ended': ended, 'why': '; '.join(c['why'] for c in costs), 'wall_s': round(sum(c['wall_s'] for c in costs), 3),
-           'cpu_s': round(sum(c['cpu_s'] for c in costs), 3), 'peak_rss_mb': max(c['peak_rss_mb'] for c in costs), 'argv': argv, 'qemu_version': qemu_version(),
+           'cpu_s': round(sum(c['cpu_s'] for c in costs), 3), 'peak_rss_mb': max(c['peak_rss_mb'] for c in costs), 'argv': argv,
+           'qemu_version': qemu_version(QEMU_PINS if a['pins'] else QEMU),
+           'pins': {'layout': a['pins'], 'stimulus': a['pins_in'], 'wires': a['wires'], 'lines': pin_lines} if a['pins'] else None,
            'icount_shift': a['icount'], 'uart0_bytes': os.path.getsize('uart0.bin'), 'trace_lines': lines, 'boots': costs,
            'params_offset': a['offset'], 'params_bytes': len(a['params']) // 2, 'qemu_output_tail': out[-1500:]}
     json.dump(res, open('run.json', 'w'), indent=1)
@@ -211,9 +264,11 @@ def scenario(a):
 def serve(a):
     img = '/tmp/twin_flash.bin'
     patch(a['image'], img, a['params'], a['offset'])
-    argv = base_argv(img, a['icount'], True) + ['-serial', 'tcp::%d,server,nowait' % a['serve'], '-serial', 'file:%s' % a['trace']]
-    print(json.dumps({'t': 'ready', 'argv': argv, 'qemu_version': qemu_version(), 'tcp': a['serve'], 'trace': a['trace']}), flush=True)
-    os.execvp(QEMU, argv)
+    argv = base_argv(img, a['icount'], True, a['pins']) + ['-serial', 'tcp::%d,server,nowait' % a['serve'], '-serial', 'file:%s' % a['trace']]
+    port = (a['pins_port'] or a['serve'] + 1) if a['pins'] else 0
+    argv += pins_argv(a, 'socket,host=0.0.0.0,port=%d,server=on,wait=off' % port)
+    print(json.dumps({'t': 'ready', 'argv': argv, 'qemu_version': qemu_version(argv[0]), 'tcp': a['serve'], 'trace': a['trace'], 'pins_tcp': port}), flush=True)
+    os.execvp(argv[0], argv)
 
 
 def main(argv):
@@ -221,7 +276,7 @@ def main(argv):
         print(__doc__)
         return 2
     a = {'image': argv[0], 'params': '', 'offset': 0x110000, 'icount': 3, 'max_wall': 180.0, 'until': '@END', 'serve': 0,
-         'trace': '/tmp/trace.log', 'rx_plan': '', 'boots': 1}
+         'trace': '/tmp/trace.log', 'rx_plan': '', 'boots': 1, 'pins': '', 'pins_in': '', 'wires': '', 'pins_port': 0}
     i = 1
     while i < len(argv):
         k, v = argv[i], argv[i + 1] if i + 1 < len(argv) else ''
@@ -243,10 +298,22 @@ def main(argv):
             a['rx_plan'] = os.path.basename(v)
         elif k == '--boots':
             a['boots'] = max(1, int(v))
+        elif k == '--pins':
+            a['pins'] = os.path.basename(v)
+        elif k == '--pins-in':
+            a['pins_in'] = os.path.basename(v)
+        elif k == '--wires':
+            a['wires'] = v
+        elif k == '--pins-port':
+            a['pins_port'] = int(v)
         else:
             print('polari-c3-run: unknown option %s' % k)
             return 2
         i += 2
+    why = pins_refusal(a)
+    if why:
+        print(why)
+        return 2
     return serve(a) if a['serve'] else scenario(a)
 
 

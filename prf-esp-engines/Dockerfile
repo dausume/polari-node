@@ -5,6 +5,13 @@
 #   ESP-IDF v5.5.5 (commit b774170f…)       Apache-2.0 (FreeRTOS-Kernel inside it: MIT)   the build system + the C RTOS (RULE 2: the apps are C)
 #   riscv32-esp-elf esp-14.2.0_20260121      GPL-3.0 with the GCC runtime exception        the C compiler (installed by idf_tools.py, sha256 from tools.json)
 #   qemu-riscv32 esp_develop_9.2.2_20260417  GPL-2.0-only (espressif/qemu COPYING)         the twin: `-machine esp32c3` (idf_tools.py, sha256 547f03e0…)
+#   qemu + polari-block (qemu-patches/)      GPL-2.0-only + our files GPL-2.0-or-later      pt-4 (AI-Notes/plans/PIN_TWIN_PLAN.md): the SAME fork source at the same tag
+#                                                                                           (commit 40edccac…), built here with qemu-patches/0001..0007 = the
+#                                                                                           `polari-block` device: GPIO + IO_MUX pads from Polari's chip rows, the
+#                                                                                           pin channel, the GPIO interrupt, board wires. Installed BESIDE the
+#                                                                                           prebuilt binary as qemu-system-riscv32-polari; `polari-c3-run --pins`
+#                                                                                           is the only caller. The prebuilt binary and every run without --pins
+#                                                                                           are unchanged.
 #   esptool (IDF's python env)               GPL-2.0+                                       merge_bin for the twin's flash image; write_flash (DRY-RUN here)
 #   cmake 3.30.2 / ninja 1.12.1              BSD-3-Clause / Apache-2.0                      what idf.py drives (idf_tools.py, by sha256)
 #   python3-falcon + gunicorn                Apache-2.0 / MIT                               the /capability + /run worker (the board engines' protocol)
@@ -13,6 +20,7 @@
 #                                                  app.bin, size.json (idf.py size --format json2), build.json (wall + peak RSS)
 #   polari-c3-run     (polari_c3_run.py, ours)     flash_image.bin → QEMU esp32c3 for N virtual ms with UART0 = the SimRigState
 #                                                  frames and UART1 = the FreeRTOS trace lines → uart0.bin, trace.log, run.json
+#                                                  (--pins LAYOUT: the pin model → also pins.log, pb-dump.txt)
 #
 # WHY NOT `FROM espressif/idf:v5.5.5`: that image installs EVERY target — 5 116 MB compressed on Docker Hub (amd64,
 # measured 2026-10-02), > 12 GB unpacked, more than this device had free. Espressif's OWN Dockerfile
@@ -25,6 +33,8 @@
 ARG BASE=ubuntu:24.04@sha256:a853f94d226358a79c740cfc7bce0c289748f3fe3488d921d038ccd752c61b60
 ARG IDF_TAG=v5.5.5
 ARG IDF_COMMIT=b774170ff46c393eeb5e495ea37936038d3f4f4f
+ARG QEMU_TAG=esp-develop-9.2.2-20260417
+ARG QEMU_COMMIT=40edccac415693c5130f91c01d84176ae6008566
 
 FROM ${BASE} AS idf
 ARG IDF_TAG
@@ -53,14 +63,39 @@ RUN find $IDF_PATH -name .git -prune -exec rm -rf {} + \
          for m in rv32i_zicsr_zifencei rv32imac_zicsr_zifencei rv32imafc_zicsr_zifencei rv32imafc_zicsr_zifencei_zba_zbb_zbc_zbs; do rm -rf $d/$m; done; done \
     && du -sm $IDF_PATH $IDF_TOOLS_PATH/tools $IDF_TOOLS_PATH/tools/* $IDF_TOOLS_PATH/python_env
 
+# pt-4: the pin-model QEMU, from the fork's source at the tag the prebuilt binary was cut from. The configure line is
+# Espressif's native one (their release CI) less SDL, plus the system libfdt; the three meson sub-projects (keycodemapdb,
+# berkeley-softfloat-3, berkeley-testfloat-3) are fetched by configure at the revisions the tag's own .wrap files pin.
+# STATE 2026-11-22: this stage is WRITTEN FROM the hand build that passed pt-0..pt-4 (same source, same patches, same
+# configure flags, in an ubuntu:24.04 builder) but has NOT been built as part of this file yet.
+FROM ${BASE} AS qemu
+ARG QEMU_TAG
+ARG QEMU_COMMIT
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config python3 python3-venv ninja-build flex bison git ca-certificates \
+        libglib2.0-dev libpixman-1-dev libgcrypt20-dev libslirp-dev zlib1g-dev libfdt-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth=1 -b ${QEMU_TAG} https://github.com/espressif/qemu.git /src \
+    && test "$(git -C /src rev-parse HEAD)" = "${QEMU_COMMIT}"
+COPY qemu-patches /patches
+RUN cd /src && for p in /patches/*.patch; do git apply --index "$p" || exit 1; done \
+    && mkdir build && cd build \
+    && ../configure --bindir=bin --datadir=share/qemu --enable-gcrypt --enable-pixman --enable-slirp --enable-fdt=system --enable-stack-protector \
+         --extra-cflags=-Werror --prefix=/opt/polari-qemu --target-list=riscv32-softmmu \
+         --with-pkgversion=polari-block-esp_develop_9.2.2_20260417 --with-suffix= --without-default-features \
+    && ninja qemu-system-riscv32 && ninja install \
+    && /opt/polari-qemu/bin/qemu-system-riscv32 --version | head -1 \
+    && /opt/polari-qemu/bin/qemu-system-riscv32 -device polari-block,help | head -5
+
 FROM ${BASE}
 ARG DEBIAN_FRONTEND=noninteractive
 # runtime only: python for idf.py/esptool, the QEMU fork's shared libraries (Espressif's list), the worker
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 python3-venv python-is-python3 git make \
-        libglib2.0-0 libpixman-1-0 libsdl2-2.0-0 libslirp0 libgcrypt20 libusb-1.0-0 python3-falcon gunicorn \
+        libglib2.0-0 libpixman-1-0 libsdl2-2.0-0 libslirp0 libgcrypt20 libusb-1.0-0 libfdt1 python3-falcon gunicorn \
     && rm -rf /var/lib/apt/lists/* \
     && dpkg-query -W -f '${Package} ${Version}\n' python3 python3-falcon gunicorn
 COPY --from=idf /opt/esp /opt/esp
+COPY --from=qemu /opt/polari-qemu /opt/polari-qemu
 ENV IDF_PATH=/opt/esp/idf IDF_TOOLS_PATH=/opt/esp IDF_PYTHON_CHECK_CONSTRAINTS=no IDF_CCACHE_ENABLE=0 \
     IDF_COMPONENT_MANAGER=0 IDF_TARGET=esp32c3
 # the engines the worker and `docker run` name directly: esptool from IDF's python env, the QEMU fork, two binutils
@@ -70,7 +105,9 @@ RUN ln -sf /usr/bin/python3 /usr/local/bin/python && git config --system --add s
     && chmod 0755 /usr/local/bin/esptool.py \
     && ln -s "$(ls /opt/esp/tools/qemu-riscv32/*/qemu/bin/qemu-system-riscv32)" /usr/local/bin/qemu-system-riscv32 \
     && for b in nm objdump; do ln -s "$(ls /opt/esp/tools/riscv32-esp-elf/*/riscv32-esp-elf/bin/riscv32-esp-elf-$b)" /usr/local/bin/riscv32-esp-elf-$b; done \
-    && qemu-system-riscv32 --version | head -1 && esptool.py version | tail -1 && riscv32-esp-elf-nm --version | head -1
+    && ln -s /opt/polari-qemu/bin/qemu-system-riscv32 /usr/local/bin/qemu-system-riscv32-polari \
+    && qemu-system-riscv32 --version | head -1 && qemu-system-riscv32-polari --version | head -1 \
+    && esptool.py version | tail -1 && riscv32-esp-elf-nm --version | head -1
 COPY esp_env.sh /usr/local/bin/esp-env
 RUN chmod 0755 /usr/local/bin/esp-env && esp-env idf.py --version && esp-env riscv32-esp-elf-gcc --version | head -1
 COPY polari_idf_build.py /usr/local/bin/polari-idf-build
