@@ -11,6 +11,8 @@ and carries the backend's commands back down. The worker does not generate anyth
                          The jar is BUILT here (mvn, offline from the image's warmed repository) and CACHED by the sha256 of the project (everything
                          but bridge.properties), so the second bridge of the same code starts at once. state: building -> running | failed -> ended.
                          `grpc_target` unset = log-only (grpc.enabled=false): the bridge decodes and prints every frame - the proof mode.
+                         `grpc_tls` verified | plaintext (optional): replaces the generated project's grpc.tls line and is repeated in every answer, so a
+                         caller can tell this worker applied it. A bridge pushing to its node's isle name sends `verified`; unset keeps the project's own line.
                          `twin_uart` (td-4, TWIN_DOOR_PLAN.md) says HOW the bridge reaches the session's serial stream: `wss://<door>/sessions/<id>/uart`
                          = through the board-engines worker's twin door (source=twin-door, WsDevicePort), `tcp://host:port` = the raw port; unset =
                          twin_host / twin_port as before. A door needs `token` (the session's): it is handed to the bridge's process in the environment
@@ -174,7 +176,7 @@ def reap():
 
 def _public(s, detail=False):
     now = time.time()
-    keys = ('id', 'session_id', 'bridge_name', 'twin_host', 'twin_port', 'twin_uart', 'grpc_target', 'owner', 'state', 'started', 'expires', 'ttl_s', 'pid', 'jar_sha256',
+    keys = ('id', 'session_id', 'bridge_name', 'twin_host', 'twin_port', 'twin_uart', 'grpc_target', 'grpc_tls', 'owner', 'state', 'started', 'expires', 'ttl_s', 'pid', 'jar_sha256',
             'jar_bytes', 'build_fp', 'build', 'end_reason')
     out = {k: s.get(k) for k in keys if k in s}
     out['grpc'] = bool(s.get('grpc_target'))
@@ -254,7 +256,8 @@ def _build(fp, files, log_path):
 def _properties(base, s):
     """bridge.properties text: the generated one with this bridge's own keys replaced (how it reaches the twin, gRPC on/off). The session's token is never
     written here: a door bridge reads it from its environment (TWIN_TOKEN)."""
-    keep = [ln for ln in (base or '').splitlines() if ln.split('=', 1)[0].strip() not in _OWN_KEYS]
+    own = _OWN_KEYS + (('grpc.tls',) if s.get('grpc_tls') else ())
+    keep = [ln for ln in (base or '').splitlines() if ln.split('=', 1)[0].strip() not in own]
     uart = s.get('twin_uart') or ''
     mine = ['# hosted bridge %s beside twin session %s (sim-2)' % (s['id'], s['session_id']),
             'source=%s' % ('twin-door' if _UART_DOOR.fullmatch(uart) else 'twin-tcp')]
@@ -262,6 +265,7 @@ def _properties(base, s):
     mine += ['twin.uart=%s' % uart] if uart else []
     mine += ['twin.connect_timeout_s=30', 'max_frames=0']
     mine += ['grpc.enabled=true', 'grpc.target=%s' % s['grpc_target']] if s.get('grpc_target') else ['grpc.enabled=false']
+    mine += ['grpc.tls=%s' % s['grpc_tls']] if s.get('grpc_tls') else []
     return '\n'.join(keep + mine) + '\n'
 
 
@@ -328,6 +332,9 @@ def start(body):
         grpc = str(body.get('grpc_target') or '')
         if grpc and not re.fullmatch(r'[A-Za-z0-9._\[\]:-]{1,253}:\d{1,5}', grpc):
             return falcon.HTTP_400, {'ok': False, 'error': 'grpc_target is <host>:<port> of the Polari backend\'s gRPC bridge port (unset = log-only)'}
+        tls = str(body.get('grpc_tls') or '')
+        if tls not in ('', 'verified', 'plaintext'):
+            return falcon.HTTP_400, {'ok': False, 'error': 'grpc_tls is verified or plaintext (unset = the generated project\'s own grpc.tls line)'}
         bname = re.sub(r'[^A-Za-z0-9_.-]', '', str(body.get('bridge_name') or 'bridge'))[:60] or 'bridge'
         session = re.sub(r'[^A-Za-z0-9_.@:-]', '', str(body.get('session_id') or ''))[:80]
         owner = re.sub(r'[^A-Za-z0-9_.@:-]', '', str(body.get('owner') or ''))[:80]
@@ -335,7 +342,7 @@ def start(body):
         if len(live) >= MAX_BRIDGES:
             return falcon.HTTP_503, {'ok': False, 'error': 'this worker already hosts %d bridges (the limit; stop one first)' % len(live)}
         bid, started = secrets.token_hex(6), time.time()
-        s = {'id': bid, 'session_id': session, 'bridge_name': bname, 'twin_host': host, 'twin_port': port, 'twin_uart': uart, 'grpc_target': grpc, 'owner': owner, 'state': 'building',
+        s = {'id': bid, 'session_id': session, 'bridge_name': bname, 'twin_host': host, 'twin_port': port, 'twin_uart': uart, 'grpc_target': grpc, 'grpc_tls': tls, 'owner': owner, 'state': 'building',
              'started': started, 'ttl_s': ttl, 'expires': started + ttl, 'pid': 0, 'build_fp': _fingerprint(files)}
         os.makedirs(DIR, exist_ok=True)
         _save(s)
