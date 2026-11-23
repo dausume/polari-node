@@ -26,6 +26,14 @@
   "scenario_run_wall_s": "0.3-0.9 s per scenario run inside QEMU (boot + window, -icount 3, sleep=off); ~1.5 s per run end to end through docker run",
   "source": "board.custom.sim_cost_c3 on c3-prio-inversion (3 runs: 0.533 / 0.534 / 0.533); twin mode (-icount shift=auto,sleep=on): virtual/wall settles at 0.7-1.1 after a burst of ~35 virtual s in the first ~2 wall s"
  },
+ "session": {
+  "engine": "c3-twin",
+  "ram_mb": 64,
+  "max_sessions": 8,
+  "fidelity": "measured",
+  "measuredAt": "2026-11-23",
+  "source": "one live twin session (polari_c3_twin.py and its QEMU with the pin model) on the chip-HAL light image, in a trial image with the network off; eight sessions (the limit) are about 512 MiB of the worker's 2048 MiB. Measured once, on one device"
+ },
  "image_build": {
   "wall_s": 809.0,
   "note": "docker build with the digest-pinned base already local (2026-11-22), the QEMU fork built from source with the pin model (qemu-patches); 464 s on 2026-10-02 without that stage"

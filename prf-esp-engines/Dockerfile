@@ -27,7 +27,8 @@
 # (esp-idf/tools/docker/Dockerfile @ v5.5.5) is followed here with IDF_INSTALL_TARGETS=esp32c3 + a shallow clone, and the
 # git history / examples / docs are dropped in a build stage. The cost rule: measured in cost.json.
 #
-#   docker build -t prf-esp-engines:noble .
+#   docker build --build-context sessions=../prf-board-engines -t prf-esp-engines:noble .
+#       (c3g-2: `sessions` is the board worker's folder - the ONE sessions module is taken from there, never copied into this one)
 #   docker run --rm -p 9850:9850 prf-esp-engines:noble                                   # the worker
 #   docker run --rm -v $PWD:/w -w /w prf-esp-engines:noble polari-idf-build project.tar  # one engine, CLI style
 ARG BASE=ubuntu:24.04@sha256:a853f94d226358a79c740cfc7bce0c289748f3fe3488d921d038ccd752c61b60
@@ -115,7 +116,16 @@ COPY polari_c3_run.py /usr/local/bin/polari-c3-run
 COPY esp_engines_service.py /srv/esp_engines_service.py
 RUN chmod 0755 /usr/local/bin/polari-idf-build /usr/local/bin/polari-c3-run
 COPY cost.json /srv/cost.json
+# c3g-1/2 (AI-Notes/plans/C3_SESSION_PLAN.md): the live C3 twin behind the board twin's control line, and the sessions that start it
+COPY polari_c3_twin.py /usr/local/bin/polari-c3-twin
+COPY --from=sessions board_sessions.py /srv/board_sessions.py
+COPY test_c3_twin.py test_c3_sessions.py /srv/
+RUN chmod 0755 /usr/local/bin/polari-c3-twin && mkdir -p /srv/sessions && chown worker /srv/sessions
+ENV SESSIONS_KIND=c3 SESSIONS_DIR=/srv/sessions
 USER worker
 WORKDIR /w
-EXPOSE 9850 9851
+# the twin and its sessions are proved IN the image on a stand-in QEMU (no firmware is built here); a failure fails the build
+RUN python3 -B /srv/test_c3_twin.py && python3 -B /srv/test_c3_sessions.py
+# 9832-9863 = twin sessions (a serial + a control port each), as on the board worker
+EXPOSE 9850 9851 9832-9863
 CMD ["gunicorn", "-b", "0.0.0.0:9850", "-w", "1", "-t", "1800", "--chdir", "/srv", "esp_engines_service:app"]

@@ -17,6 +17,13 @@ token - mode 0600), <id>.hex, <id>.out (the twin's stdout+stderr). A reaper kill
 every REAP_EVERY_S seconds from a thread (an abandoned session must not outlive its TTL just because nobody asked). The twin
 gets its token through the environment (POLARI_TWIN_CTL_TOKEN), never argv. Ports come from SESSION_PORTS (default 9832-9863
 minus the other hw-engines workers' published ports 9840/9850/9860).
+
+c3g-2 (C3_SESSION_PLAN.md): ONE sessions module for every worker that runs twins. SESSIONS_KIND says which twin this worker starts:
+  avr (the default)  polari-avr-twin, the firmware as hex_b64 (Intel HEX) - everything above
+  c3                 polari-c3-twin (prf-esp-engines), which speaks the same control line. POST /sessions takes
+                     {image_b64 (the merged flash image), layout (the pin layout's JSON text), wires? ("0-1"), board?, ttl_s?, token?, owner?}.
+                     The reply keeps its keys: hex_sha256 / hex_bytes are the IMAGE's sha256 and size, mcu is esp32c3, freq is 0.
+The esp worker's image takes this file from here at build time; it is never copied into that folder.
 """
 import base64
 import hashlib
@@ -25,6 +32,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import subprocess
 import threading
@@ -33,7 +41,12 @@ import time
 import falcon
 
 DIR = os.environ.get('SESSIONS_DIR', '/srv/sessions')
-TWIN = os.environ.get('SESSIONS_TWIN_BIN', 'polari-avr-twin')
+KIND = os.environ.get('SESSIONS_KIND', 'avr')
+TWINS = {'avr': 'polari-avr-twin', 'c3': 'polari-c3-twin'}
+if KIND not in TWINS:
+    raise SystemExit('SESSIONS_KIND=%s is not one of %s' % (KIND, ', '.join(sorted(TWINS))))
+TWIN = os.environ.get('SESSIONS_TWIN_BIN', TWINS[KIND])
+READY_WAIT_S = {'avr': 5.0, 'c3': 30.0}[KIND]      # the C3 twin boots QEMU and opens its pin channel before it says ready
 RESERVED = {int(p) for p in os.environ.get('SESSION_PORTS_RESERVED', '9840,9850,9860').split(',') if p}
 LO, HI = [int(x) for x in os.environ.get('SESSION_PORTS', '9832-9863').split('-')]
 PORTS = [p for p in range(LO, HI + 1) if p not in RESERVED]
@@ -42,6 +55,8 @@ TTL_DEFAULT, TTL_MAX, TTL_MIN = 1800, 14400, 10
 KEEP_DEAD_S = 300
 REAP_EVERY_S = 5
 MAX_HEX = 1024 * 1024
+MAX_IMAGE = 16 * 1024 * 1024       # the C3's merged flash image (4 MB for the tree's builds)
+MAX_LAYOUT = 2 * 1024 * 1024
 MCUS = {'atmega328p', 'atmega328', 'atmega168', 'atmega32u4', 'atmega16u2'}
 _lock = threading.RLock()
 _procs = {}   # id -> Popen (so a finished child is wait()ed, not left a zombie)
@@ -53,7 +68,8 @@ def _path(sid, ext):
 
 def _load(sid):
     try:
-        return json.load(open(_path(sid, 'json')))
+        with open(_path(sid, 'json')) as f:
+            return json.load(f)
     except Exception:
         return None
 
@@ -72,7 +88,8 @@ def _alive(s):
         return p.poll() is None
     try:
         os.kill(s['pid'], 0)
-        return 'polari-avr-twin' in open('/proc/%d/cmdline' % s['pid']).read()
+        with open('/proc/%d/cmdline' % s['pid']) as f:
+            return os.path.basename(TWIN) in f.read()
     except Exception:
         return False
 
@@ -113,11 +130,12 @@ def _kill(s):
 
 
 def _remove(sid):
-    for ext in ('json', 'json.tmp', 'hex', 'out'):
+    for ext in ('json', 'json.tmp', 'hex', 'img', 'layout', 'out'):
         try:
             os.remove(_path(sid, ext))
         except OSError:
             pass
+    shutil.rmtree(_path(sid, 'd'), ignore_errors=True)      # a C3 twin's own folder (its flash copy, its pin channel)
 
 
 def reap():
@@ -145,7 +163,8 @@ def _tail_status(sid):
             size = f.tell()
             f.seek(max(0, size - 8192))
             lines = f.read().decode('utf-8', 'replace').splitlines()
-        head = open(_path(sid, 'out'), 'rb').read(2048).decode('utf-8', 'replace').splitlines()
+            f.seek(0)
+            head = f.read(2048).decode('utf-8', 'replace').splitlines()
     except Exception:
         return None, None, ''
     def last(prefix, ls):
@@ -162,6 +181,9 @@ def _tail_status(sid):
 def _public(s, detail=False):
     now = time.time()
     out = {k: s[k] for k in ('id', 'board', 'mcu', 'freq', 'hex_sha256', 'hex_bytes', 'ports', 'owner', 'started', 'expires', 'ttl_s', 'pid', 'realtime')}
+    out['kind'] = s.get('kind', 'avr')
+    if 'wires' in s:
+        out['wires'] = s['wires']
     out['state'] = 'ended' if s.get('ended') else 'running'
     out['remaining_s'] = 0 if s.get('ended') else max(0, round(s['expires'] - now, 1))
     if s.get('ended'):
@@ -178,30 +200,77 @@ def _free_ports(n):
     return free[:n] if len(free) >= n else None
 
 
+def _avr(body, sid, ports):
+    """The AVR twin of one request -> (error words or None, the record's firmware fields, argv)."""
+    if not body.get('hex_b64'):
+        return 'POST /sessions needs hex_b64 (the firmware .hex, base64)', None, None
+    try:
+        raw = base64.b64decode(body['hex_b64'], validate=True)
+    except Exception:
+        return 'hex_b64 is not base64', None, None
+    if len(raw) > MAX_HEX or not raw.startswith(b':'):
+        return 'the firmware must be Intel HEX text of at most %d bytes' % MAX_HEX, None, None
+    mcu = str(body.get('mcu') or 'atmega328p')
+    if mcu not in MCUS:
+        return 'mcu %r is not one of %s' % (mcu, sorted(MCUS)), None, None
+    try:
+        freq = int(body.get('freq') or 16000000)
+    except (TypeError, ValueError):
+        return 'freq and ttl_s are whole numbers', None, None
+    if not 1000000 <= freq <= 32000000:
+        return 'freq must be 1 MHz to 32 MHz', None, None
+    hex_path = _path(sid, 'hex')
+    with open(hex_path, 'wb') as f:
+        f.write(raw)
+    realtime = not body.get('free')
+    argv = [TWIN, '--hex', hex_path, '--mcu', mcu, '--freq', str(freq), '--tcp', str(ports[0]), '--ctl', str(ports[1]), '--status-ms', '500']
+    if not realtime:
+        argv.append('--free')
+    return None, {'mcu': mcu, 'freq': freq, 'hex_sha256': hashlib.sha256(raw).hexdigest(), 'hex_bytes': len(raw), 'realtime': realtime}, argv
+
+
+def _c3(body, sid, ports):
+    """The C3 twin of one request (the same three values). The image runs on the pin model: the layout is the chip, the wires are the board."""
+    if not body.get('image_b64') or not isinstance(body.get('layout'), str) or not body['layout'].strip():
+        return 'POST /sessions needs image_b64 (the merged flash image, base64) and layout (the pin layout, JSON text)', None, None
+    try:
+        raw = base64.b64decode(body['image_b64'], validate=True)
+    except Exception:
+        return 'image_b64 is not base64', None, None
+    if not 4096 <= len(raw) <= MAX_IMAGE or raw[:1] != b'\xe9':
+        return 'the firmware must be a merged ESP flash image (first byte 0xE9) of at most %d bytes' % MAX_IMAGE, None, None
+    if len(body['layout']) > MAX_LAYOUT:
+        return 'the layout is over %d bytes' % MAX_LAYOUT, None, None
+    try:
+        json.loads(body['layout'])
+    except Exception:
+        return 'the layout is not JSON text (it is the pin layout, as the build wrote it)', None, None
+    wires = str(body.get('wires') or '')
+    if wires and not re.fullmatch(r'\d{1,2}-\d{1,2}(,\d{1,2}-\d{1,2})*', wires):
+        return 'wires are pad-pad pairs (0-1,4-5), got %r' % wires[:60], None, None
+    if body.get('free'):
+        return 'the C3 twin runs in twin time only (no free-running mode)', None, None
+    img, layout = _path(sid, 'img'), _path(sid, 'layout')
+    with open(img, 'wb') as f:
+        f.write(raw)
+    with open(layout, 'w') as f:
+        f.write(body['layout'])
+    argv = [TWIN, '--image', img, '--layout', layout, '--wires', wires, '--tcp', str(ports[0]), '--ctl', str(ports[1]), '--status-ms', '500', '--work', _path(sid, 'd')]
+    return None, {'mcu': 'esp32c3', 'freq': 0, 'hex_sha256': hashlib.sha256(raw).hexdigest(), 'hex_bytes': len(raw), 'realtime': True, 'wires': wires}, argv
+
+
 def start(body):
     """Returns (status, payload)."""
     reap()
     with _lock:
-        if not isinstance(body, dict) or not body.get('hex_b64'):
-            return falcon.HTTP_400, {'ok': False, 'error': 'POST /sessions needs hex_b64 (the firmware .hex, base64)'}
-        try:
-            raw = base64.b64decode(body['hex_b64'], validate=True)
-        except Exception:
-            return falcon.HTTP_400, {'ok': False, 'error': 'hex_b64 is not base64'}
-        if len(raw) > MAX_HEX or not raw.startswith(b':'):
-            return falcon.HTTP_400, {'ok': False, 'error': 'the firmware must be Intel HEX text of at most %d bytes' % MAX_HEX}
-        mcu = str(body.get('mcu') or 'atmega328p')
-        if mcu not in MCUS:
-            return falcon.HTTP_400, {'ok': False, 'error': 'mcu %r is not one of %s' % (mcu, sorted(MCUS))}
+        if not isinstance(body, dict):
+            return falcon.HTTP_400, {'ok': False, 'error': 'POST /sessions needs a JSON object'}
         board = re.sub(r'[^A-Za-z0-9_.-]', '', str(body.get('board') or 'unknown'))[:60] or 'unknown'
         owner = re.sub(r'[^A-Za-z0-9_.@:-]', '', str(body.get('owner') or ''))[:80]
         try:
-            freq = int(body.get('freq') or 16000000)
             ttl = int(body.get('ttl_s') or TTL_DEFAULT)
         except (TypeError, ValueError):
             return falcon.HTTP_400, {'ok': False, 'error': 'freq and ttl_s are whole numbers'}
-        if not 1000000 <= freq <= 32000000:
-            return falcon.HTTP_400, {'ok': False, 'error': 'freq must be 1 MHz to 32 MHz'}
         if not TTL_MIN <= ttl <= TTL_MAX:
             return falcon.HTTP_400, {'ok': False, 'error': 'ttl_s must be %d to %d seconds (%d is the default)' % (TTL_MIN, TTL_MAX, TTL_DEFAULT)}
         token = str(body.get('token') or secrets.token_hex(16))
@@ -214,24 +283,21 @@ def start(body):
         if not ports:
             return falcon.HTTP_503, {'ok': False, 'error': 'no free session ports left in %d-%d' % (LO, HI)}
         sid = secrets.token_hex(6)
-        hex_path = _path(sid, 'hex')
         os.makedirs(DIR, exist_ok=True)
-        open(hex_path, 'wb').write(raw)
-        realtime = not body.get('free')
-        argv = [TWIN, '--hex', hex_path, '--mcu', mcu, '--freq', str(freq), '--tcp', str(ports[0]), '--ctl', str(ports[1]), '--status-ms', '500']
-        if not realtime:
-            argv.append('--free')
+        why, fw, argv = {'avr': _avr, 'c3': _c3}[KIND](body, sid, ports)
+        if why:
+            _remove(sid)
+            return falcon.HTTP_400, {'ok': False, 'error': why}
         out = open(_path(sid, 'out'), 'wb')
         proc = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
                                 env=dict(os.environ, POLARI_TWIN_CTL_TOKEN=token))
         out.close()
         _procs[sid] = proc
         started = time.time()
-        s = {'id': sid, 'board': board, 'mcu': mcu, 'freq': freq, 'hex_sha256': hashlib.sha256(raw).hexdigest(), 'hex_bytes': len(raw),
-             'ports': {'tcp': ports[0], 'ctl': ports[1]}, 'owner': owner, 'started': started, 'ttl_s': ttl, 'expires': started + ttl,
-             'pid': proc.pid, 'realtime': realtime, 'token': token}
+        s = dict(fw, id=sid, board=board, kind=KIND, ports={'tcp': ports[0], 'ctl': ports[1]}, owner=owner, started=started, ttl_s=ttl, expires=started + ttl,
+                 pid=proc.pid, token=token)
         _save(s)
-        for _ in range(100):   # up to 5 s for the {"t":"ready"} line
+        for _ in range(int(READY_WAIT_S / 0.05)):   # the {"t":"ready"} line
             _, ready, tail = _tail_status(sid)
             if ready or proc.poll() is not None:
                 break
@@ -320,7 +386,7 @@ class Reaper:
 def info():
     """The /capability block: this worker lists sessions."""
     live = [s for s in _all() if not s.get('ended')]
-    return {'available': bool(__import__('shutil').which(TWIN)), 'max': MAX_SESSIONS, 'active': len(live),
+    return {'available': bool(shutil.which(TWIN)), 'kind': KIND, 'max': MAX_SESSIONS, 'active': len(live),
             'ports': '%d-%d' % (LO, HI), 'reserved_ports': sorted(RESERVED), 'ttl_default_s': TTL_DEFAULT, 'ttl_max_s': TTL_MAX}
 
 

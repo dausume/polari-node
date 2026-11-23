@@ -29,6 +29,16 @@ import time
 
 import falcon
 
+# c3g-2 (AI-Notes/plans/C3_SESSION_PLAN.md): live twin sessions, the board worker's protocol unchanged. There is ONE sessions module,
+# prf-board-engines/board_sessions.py; the image takes it from there at build time (a named build context), the tree's tests put that folder
+# on the path. A worker without it (an image built before c3g-2) still serves /capability and /run and says nothing about sessions.
+os.environ.setdefault('SESSIONS_KIND', 'c3')
+os.environ.setdefault('SESSION_PORTS_RESERVED', '9840,9850,9851,9860')      # 9850 is this worker, 9851 the runner's serve mode
+try:
+    import board_sessions
+except ImportError:
+    board_sessions = None
+
 ENGINES = {'idf-build': 'polari-idf-build', 'c3-run': 'polari-c3-run', 'esptool': 'esptool.py', 'qemu-esp32c3': 'qemu-system-riscv32',
            'riscv32-esp-elf-nm': 'riscv32-esp-elf-nm', 'riscv32-esp-elf-objdump': 'riscv32-esp-elf-objdump'}
 VERSION_ARGS = {'idf-build': None, 'c3-run': None, 'esptool': ['version']}
@@ -96,6 +106,11 @@ class Capability:
         resp.media = {'worker': 'esp-engines', 'resources': _resources_block(),
                       'engines': {e: {'available': bool(shutil.which(b)), 'version': _version(e), 'binary': b} for e, b in ENGINES.items()},
                       'protocol': 'POST /run {engine, args, files, files_b64, timeout} — argv only, files round-trip; never a flash'}
+        if board_sessions:
+            resp.media['sessions'] = board_sessions.info()
+            door = board_sessions.transports()      # present only when this worker has a twin door (TWIN_DOOR_URL)
+            if door:
+                resp.media['transports'] = door
 
 
 class SystemInfo:
@@ -203,7 +218,9 @@ def _job(body, engine, binary, args, timeout):
         shutil.rmtree(work, ignore_errors=True)
 
 
-app = falcon.App()
+app = falcon.App(middleware=[board_sessions.Reaper()] if board_sessions else [])
 app.add_route('/capability', Capability())
 app.add_route('/system-info', SystemInfo())
 app.add_route('/run', Run())
+if board_sessions:
+    board_sessions.add_routes(app)

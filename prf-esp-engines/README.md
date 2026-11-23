@@ -43,8 +43,8 @@ falls through unchanged. With it:
 - Without `--pins` nothing changes: the prebuilt binary, the same argv, the same outputs.
 - What it is not: voltages, pad driver timing, analog, a peripheral's signal on a pad (UART / LEDC / SPI outputs on a pad are logged as not
   modelled and the pad is not driven by this device). An image without the binary refuses `--pins` in words; it never falls back to the stub.
-- **State (2026-11-22):** the device, the patches and `--pins` are proven with a hand-built binary (same source, same patches, same configure
-  flags) in a local test image; the `qemu` stage of this Dockerfile has not been built yet. A rebuilt image is what carries it to the other devices.
+- **State (2026-11-23):** the `qemu` stage was built from this Dockerfile on 2026-11-22 (the user's word; it downloads the apt
+  packages and the espressif/qemu source). That image is the `esp-engines` store app of release 93, installed on econ.
 
 ## Host-driven runs (smp S5, the light Mission on the C3 twin)
 
@@ -56,6 +56,29 @@ falls through unchanged. With it:
 - What the machine does NOT model: `esp32c3.gpio` is a register stub (measured 2026-10-19 with `gpio_set_level`/`gpio_get_level` under `-monitor`: `GPIO_OUT` stays 0, `GPIO_IN`
   never moves, `qom-tree` shows no pin lines, one `sysbus-irq`). A button or an LED level cannot be reached from outside, so on the PREBUILT binary the light firmware keeps its pins in a RAM shim on the twin (the pin model above removes that need)
   (`board/custom/firmware/esp32c3/apps/light_hal.h`, `PIN_SHIM=1`). That is a twin result, not a chip result.
+
+## Twin sessions (c3g, `AI-Notes/plans/C3_SESSION_PLAN.md`)
+
+A session is a C3 twin that stays up and takes presses: the Sim bench's button on a C3 pad. The worker holds them with the
+same sessions module as the board worker (`prf-board-engines/board_sessions.py`, copied in at build time from a named build
+context, `SESSIONS_KIND=c3`), so the backend talks to both workers the same way (`POST /sessions`, `GET /sessions`, stop).
+
+- `polari-c3-twin` (`polari_c3_twin.py`) runs one session: QEMU with the pin model, the session's image, the chip's pin layout
+  and the wires. It speaks the AVR twin's control line (`{"set":"GPIO3","level":0|1|"z"}`, `{"watch":[…]}`, `{"status":1}`), so
+  one control hub in the backend serves both chips.
+- One session holds about 64 MiB (measured once, `cost.json` `session`); at most eight run at once.
+- `test_c3_twin.py` and `test_c3_sessions.py` run in the image with the network off.
+- **State (2026-11-23): source-tested only.** The installed `esp-engines` (release 93) has no sessions yet. They need the image
+  rebuilt from this Dockerfile (it downloads again) and a door for the sessions' lines between devices: both the user's word
+  (plan §4, D-c3g-1 and D-c3g-2).
+
+## As an isle store app
+
+The worker reaches other devices as the `esp-engines` store app (`Isle-Mesh/isle-cli/releases/esp-engines/`): `isle store
+build` makes the app from this image, `isle release build --store-app <device>:<folder>` puts it into a release, and the
+release run installs it on that device (econ, since release 93). The app's definition holds its limits and its health path
+(`/capability`). A long build answers through the device's agent because the worker sends a space every 20 s until the
+answer is ready (`WORKER_KEEPALIVE_S`, `test_keepalive.py`).
 
 ## Why not `FROM espressif/idf:v5.5.5`
 

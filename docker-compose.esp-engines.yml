@@ -31,6 +31,8 @@ services:
   esp-engines:
     build:
       context: ./prf-esp-engines
+      additional_contexts:
+        sessions: ./prf-board-engines      # c3g-2: the ONE sessions module is taken from the board worker's folder
     image: prf-esp-engines:noble
     container_name: prf-esp-engines
     restart: unless-stopped
