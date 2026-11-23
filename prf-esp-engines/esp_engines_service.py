@@ -9,6 +9,7 @@ docker → the topology provider board.esp-engines → refusal.
   GET  /capability   {worker, engines: {name: {available, version, binary}}, resources (the measured cost.json)}
   GET  /system-info  res-1 shape + the res-3 process block
   POST /run          {"engine": name, "args": [..], "files": {name: text}, "files_b64": {name: b64}, "timeout": s}
+                     a run longer than WORKER_KEEPALIVE_S (20) answers 200 as a stream: spaces, then the same JSON
                      -> {ok, engine, returncode, stdout, stderr, stdout_chars, stderr_chars, files, files_b64, cost}
                      ARGV ONLY, no shell; `engine` must be in ENGINES; args are basenames inside the job dir.
 
@@ -23,6 +24,7 @@ import resource
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 import falcon
@@ -38,6 +40,11 @@ FLASH_WORDS = ('write_flash', 'write-flash', 'erase_flash', 'erase-flash', 'eras
 #: lengths are stated (stdout_chars / stderr_chars, the client checks them), and a run past the ceiling is REFUSED (413) —
 #: never silently cut.
 MAX_BYTES = int(os.environ.get('WORKER_MAX_MB', '16')) * 1024 * 1024
+#: a proxy in front of a worker (the isle agent) drops a request after 60 s without a byte, and a C3 build from nothing
+#: takes longer. So a run that is not over after WORKER_KEEPALIVE_S (default 20; 0 = never, the answer as before)
+#: answers as a stream: one space every WORKER_KEEPALIVE_S, then the JSON. A run that ends sooner answers as before,
+#: status and all.
+KEEPALIVE_S = float(os.environ.get('WORKER_KEEPALIVE_S', '20'))
 
 
 def _version(engine):
@@ -126,43 +133,74 @@ class Run:
         if any('..' in a or (a.startswith('/') and not a.startswith('/usr/')) for a in args):
             return _bad(resp, 'args must be basenames inside the job (or /usr/…): %s' % args)
         timeout = min(float(body.get('timeout', 300) or 300), 1800.0)
-        work = tempfile.mkdtemp(prefix='esp-')
+        done = {}
+        job = threading.Thread(target=lambda: done.update(zip(('status', 'media'), _job(body, engine, binary, args, timeout))), daemon=True)
+        job.start()
+        job.join(KEEPALIVE_S if KEEPALIVE_S > 0 else None)
+        if not job.is_alive():
+            resp.status, resp.media = done.get('status', falcon.HTTP_500), done.get('media', {'ok': False, 'error': 'the run left no answer'})
+            return
+        # still running: the answer becomes a stream, so the status line goes out now (200) and a refusal met later is said
+        # in the body (`ok` false, `error`, `status`) — the client reads `ok` and `error` either way
+        resp.status = falcon.HTTP_200
+        resp.content_type = falcon.MEDIA_JSON
+        resp.set_header('X-Accel-Buffering', 'no')
+        resp.stream = _alive(job, done)
+
+
+def _alive(job, done):
+    """One space every KEEPALIVE_S while the engine runs, then the JSON (white space before a JSON value is JSON)."""
+    while True:
+        job.join(KEEPALIVE_S)
+        if not job.is_alive():
+            break
+        yield b' '
+    media = dict(done.get('media', {'ok': False, 'error': 'the run left no answer'}))
+    if not str(done.get('status', '')).startswith('200'):
+        media['status'] = int(str(done.get('status', falcon.HTTP_500)).split()[0])
+    yield json.dumps(media).encode()
+
+
+def _job(body, engine, binary, args, timeout):
+    """One engine run in its own folder -> (status, media)."""
+    bad = lambda msg, status: (status, {'ok': False, 'error': msg})
+    work = tempfile.mkdtemp(prefix='esp-')
+    try:
+        sent = set()
+        for name, text in (body.get('files') or {}).items():
+            fn = os.path.basename(name); sent.add(fn)
+            open(os.path.join(work, fn), 'w').write(text)
+        for name, b64 in (body.get('files_b64') or {}).items():
+            fn = os.path.basename(name); sent.add(fn)
+            open(os.path.join(work, fn), 'wb').write(base64.b64decode(b64))
+        c0 = resource.getrusage(resource.RUSAGE_CHILDREN); t0 = time.perf_counter()
         try:
-            sent = set()
-            for name, text in (body.get('files') or {}).items():
-                fn = os.path.basename(name); sent.add(fn)
-                open(os.path.join(work, fn), 'w').write(text)
-            for name, b64 in (body.get('files_b64') or {}).items():
-                fn = os.path.basename(name); sent.add(fn)
-                open(os.path.join(work, fn), 'wb').write(base64.b64decode(b64))
-            c0 = resource.getrusage(resource.RUSAGE_CHILDREN); t0 = time.perf_counter()
-            try:
-                run = subprocess.run([binary] + args, capture_output=True, text=True, timeout=timeout, cwd=work, env=dict(os.environ, HOME=work))
-            except subprocess.TimeoutExpired:
-                return _bad(resp, '%s exceeded %.0fs' % (engine, timeout), falcon.HTTP_504)
-            c1 = resource.getrusage(resource.RUSAGE_CHILDREN)
-            files, files_b64 = {}, {}
-            total = len(run.stdout.encode('utf-8', 'replace')) + len(run.stderr.encode('utf-8', 'replace'))
+            run = subprocess.run([binary] + args, capture_output=True, text=True, timeout=timeout, cwd=work, env=dict(os.environ, HOME=work))
+        except subprocess.TimeoutExpired:
+            return bad('%s exceeded %.0fs' % (engine, timeout), falcon.HTTP_504)
+        c1 = resource.getrusage(resource.RUSAGE_CHILDREN)
+        files, files_b64 = {}, {}
+        total = len(run.stdout.encode('utf-8', 'replace')) + len(run.stderr.encode('utf-8', 'replace'))
+        if total > MAX_BYTES:
+            return bad('%s wrote %d bytes to stdout/stderr — past WORKER_MAX_MB (%d B); refused, never cut' % (engine, total, MAX_BYTES), falcon.HTTP_413)
+        for fn in sorted(os.listdir(work)):
+            fp = os.path.join(work, fn)
+            if fn in sent or not os.path.isfile(fp):
+                continue
+            data = open(fp, 'rb').read(); total += len(data)
             if total > MAX_BYTES:
-                return _bad(resp, '%s wrote %d bytes to stdout/stderr — past WORKER_MAX_MB (%d B); refused, never cut' % (engine, total, MAX_BYTES), falcon.HTTP_413)
-            for fn in sorted(os.listdir(work)):
-                fp = os.path.join(work, fn)
-                if fn in sent or not os.path.isfile(fp):
-                    continue
-                data = open(fp, 'rb').read(); total += len(data)
-                if total > MAX_BYTES:
-                    return _bad(resp, 'outputs (files + stdout + stderr) exceed WORKER_MAX_MB (%d B)' % MAX_BYTES, falcon.HTTP_413)
-                if b'\0' in data[:4096]:
-                    files_b64[fn] = base64.b64encode(data).decode()
-                else:
-                    files[fn] = data.decode('utf-8', 'replace')
-            cost = {'wall_s': round(time.perf_counter() - t0, 3), 'cpu_s': round((c1.ru_utime - c0.ru_utime) + (c1.ru_stime - c0.ru_stime), 3),
-                    'peak_rss_mb': round(c1.ru_maxrss / 1024.0, 1), 'source': 'worker rusage(RUSAGE_CHILDREN) around the engine'}
-            resp.media = {'ok': True, 'engine': engine, 'returncode': run.returncode, 'stdout': run.stdout, 'stderr': run.stderr,
-                          'stdout_chars': len(run.stdout), 'stderr_chars': len(run.stderr), 'max_bytes': MAX_BYTES,
-                          'files': files, 'files_b64': files_b64, 'cost': cost}
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
+                return bad('outputs (files + stdout + stderr) exceed WORKER_MAX_MB (%d B)' % MAX_BYTES, falcon.HTTP_413)
+            if b'\0' in data[:4096]:
+                files_b64[fn] = base64.b64encode(data).decode()
+            else:
+                files[fn] = data.decode('utf-8', 'replace')
+        cost = {'wall_s': round(time.perf_counter() - t0, 3), 'cpu_s': round((c1.ru_utime - c0.ru_utime) + (c1.ru_stime - c0.ru_stime), 3),
+                'peak_rss_mb': round(c1.ru_maxrss / 1024.0, 1), 'source': 'worker rusage(RUSAGE_CHILDREN) around the engine'}
+        return falcon.HTTP_200, {'ok': True, 'engine': engine, 'returncode': run.returncode, 'stdout': run.stdout, 'stderr': run.stderr,
+                                 'stdout_chars': len(run.stdout), 'stderr_chars': len(run.stderr), 'max_bytes': MAX_BYTES,
+                                 'files': files, 'files_b64': files_b64, 'cost': cost}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 app = falcon.App()
