@@ -15,6 +15,10 @@
 #   esptool (IDF's python env)               GPL-2.0+                                       merge_bin for the twin's flash image; write_flash (DRY-RUN here)
 #   cmake 3.30.2 / ninja 1.12.1              BSD-3-Clause / Apache-2.0                      what idf.py drives (idf_tools.py, by sha256)
 #   python3-falcon + gunicorn                Apache-2.0 / MIT                               the /capability + /run worker (the board engines' protocol)
+#   websockets 15.0.1 (PyPI wheel, by hash)  BSD-3-Clause (pure Python, py3-none-any)       c3g-4 (D-c3g-1 A): the board worker's twin_door.py, run by this image
+#                                                                                           as the esp-engines app's SECOND container (`python3 /srv/twin_door.py`,
+#                                                                                           :9864). noble's python3-websockets is 10.4, too old for the door (>= 13);
+#                                                                                           the same version the board image takes from trixie
 #
 #   polari-idf-build  (polari_idf_build.py, ours)  project.tar → idf.py build → firmware.elf, flash_image.bin (merged, 4 MB),
 #                                                  app.bin, size.json (idf.py size --format json2), build.json (wall + peak RSS)
@@ -31,6 +35,7 @@
 #       (c3g-2: `sessions` is the board worker's folder - the ONE sessions module is taken from there, never copied into this one)
 #   docker run --rm -p 9850:9850 prf-esp-engines:noble                                   # the worker
 #   docker run --rm -v $PWD:/w -w /w prf-esp-engines:noble polari-idf-build project.tar  # one engine, CLI style
+#   docker run --rm -p 9864:9864 -e TWIN_DOOR_WORKER=http://<worker>:9850 prf-esp-engines:noble python3 /srv/twin_door.py   # the twin door
 ARG BASE=ubuntu:24.04@sha256:a853f94d226358a79c740cfc7bce0c289748f3fe3488d921d038ccd752c61b60
 ARG IDF_TAG=v5.5.5
 ARG IDF_COMMIT=b774170ff46c393eeb5e495ea37936038d3f4f4f
@@ -63,6 +68,13 @@ RUN find $IDF_PATH -name .git -prune -exec rm -rf {} + \
     && for d in $T/riscv32-esp-elf/lib $T/lib/gcc/riscv32-esp-elf/*; do \
          for m in rv32i_zicsr_zifencei rv32imac_zicsr_zifencei rv32imafc_zicsr_zifencei rv32imafc_zicsr_zifencei_zba_zbb_zbc_zbs; do rm -rf $d/$m; done; done \
     && du -sm $IDF_PATH $IDF_TOOLS_PATH/tools $IDF_TOOLS_PATH/tools/* $IDF_TOOLS_PATH/python_env
+
+# c3g-4: websockets for the twin door, pinned by sha256 (pip --require-hashes refuses anything else), pure Python. Its own
+# stage on top of the toolchain stage (python3-venv is there), so the toolchain's layers stay as they were built.
+FROM idf AS websockets
+RUN printf 'websockets==15.0.1 --hash=sha256:f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f\n' > /tmp/ws-req.txt \
+    && python3 -m venv /tmp/pipenv && /tmp/pipenv/bin/pip install --no-deps --require-hashes --only-binary=:all: --no-compile --target /opt/websockets -r /tmp/ws-req.txt \
+    && rm -rf /tmp/pipenv /tmp/ws-req.txt /opt/websockets/bin
 
 # pt-4: the pin-model QEMU, from the fork's source at the tag the prebuilt binary was cut from. The configure line is
 # Espressif's native one (their release CI) less SDL, plus the system libfdt; the three meson sub-projects (keycodemapdb,
@@ -119,13 +131,15 @@ COPY cost.json /srv/cost.json
 # c3g-1/2 (AI-Notes/plans/C3_SESSION_PLAN.md): the live C3 twin behind the board twin's control line, and the sessions that start it
 COPY polari_c3_twin.py /usr/local/bin/polari-c3-twin
 COPY --from=sessions board_sessions.py /srv/board_sessions.py
-COPY test_c3_twin.py test_c3_sessions.py /srv/
+COPY --from=sessions twin_door.py /srv/twin_door.py
+COPY --from=websockets /opt/websockets/ /usr/lib/python3/dist-packages/
+COPY test_c3_twin.py test_c3_sessions.py test_c3_door.py /srv/
 RUN chmod 0755 /usr/local/bin/polari-c3-twin && mkdir -p /srv/sessions && chown worker /srv/sessions
 ENV SESSIONS_KIND=c3 SESSIONS_DIR=/srv/sessions
 USER worker
 WORKDIR /w
 # the twin and its sessions are proved IN the image on a stand-in QEMU (no firmware is built here); a failure fails the build
-RUN python3 -B /srv/test_c3_twin.py && python3 -B /srv/test_c3_sessions.py
-# 9832-9863 = twin sessions (a serial + a control port each), as on the board worker
-EXPOSE 9850 9851 9832-9863
+RUN python3 -B /srv/test_c3_twin.py && python3 -B /srv/test_c3_sessions.py && python3 -B /srv/test_c3_door.py
+# 9832-9863 = twin sessions (a serial + a control port each), as on the board worker; 9864 = the twin door (its own container)
+EXPOSE 9850 9851 9832-9863 9864
 CMD ["gunicorn", "-b", "0.0.0.0:9850", "-w", "1", "-t", "1800", "--chdir", "/srv", "esp_engines_service:app"]
